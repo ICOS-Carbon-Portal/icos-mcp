@@ -333,7 +333,7 @@ def render(
 <svg viewBox="0 0 1440 120" preserveAspectRatio="none" aria-hidden="true"><path d="{_wave()}" fill="none" stroke="{ACCENT}" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>
 <div class="wrap">
 <div class="kicker"><span class="bar" style="background:{ACCENT}"></span>Model Context Protocol server</div>
-<h1>ICOS greenhouse-gas observations, ready for your AI assistant</h1>
+<h1>ICOS greenhouse-gas observations and related data, ready for your AI assistant</h1>
 <p>Find atmosphere, ocean and ecosystem data, size a selection, compute statistics on the server and fetch the data — with the citation, licence and DOI of the measurements in every answer.</p>
 <p class="what"><a href="https://modelcontextprotocol.io/docs/2026-07-28/getting-started/intro">MCP</a> is an open standard that lets AI assistants such as Claude or ChatGPT use outside tools and data.</p>
 <div class="cta"><a class="btn primary" href="#connect">Connect your assistant</a>

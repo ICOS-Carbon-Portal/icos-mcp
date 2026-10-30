@@ -65,7 +65,14 @@ How to use these tools:
    Never average rows from get_data yourself: get_data returns at most a
    few thousand rows, for looking at; for anything larger give the user
    its download_url.
-4. Always cite: every data answer carries the citation, licence (CC BY
+4. The ecosystem fluxes NEE, GPP and RECO are served by /query as their
+   PRESCRIBED reference slices -- NEE_VUT_REF (variable u* threshold,
+   reference variant), GPP_NT_VUT_REF and RECO_NT_VUT_REF (night-time
+   partitioning).  Use those.  The other variants (CUT, the u*
+   percentiles, daytime partitioning) live in the zarr cubes NEE, GPP and
+   RECO: search_variables lists them with access "zarr", and
+   describe_variable gives the xarray line that reads any slice.
+5. Always cite: every data answer carries the citation, licence (CC BY
    4.0) and DOI.  Pass them on to the user.
 Station ids are CASE-SENSITIVE: atmosphere stations are a trigram plus
 the sampling height (HTM150 = Hyltemossa, 150 m), FLUXNET sites are
@@ -158,7 +165,133 @@ async def _variable(var_id: str, tok: str | None) -> dict:
     for v in await _catalogue(tok):
         if v["id"] == var_id:
             return v
+    for z in await _zarr_variants(tok):
+        if z["id"] == var_id:
+            raise ToolError(
+                f"{var_id} is a {len(z['dims'])}-dimensional variable "
+                f"({', '.join(z['dims'])}) read through zarr, not served by this tool. "
+                + (
+                    f"Its PRESCRIBED slice is {z['prescribed']} -- use that id here. "
+                    if z["prescribed"]
+                    else ""
+                )
+                + f"Any other slice: {z['recipe']}"
+            )
     raise ToolError(f"no variable {var_id!r}; search_variables lists the ids")
+
+
+# ---------------------------------------------------------------- zarr-only variables
+
+# the preferred label on each ONEFlux axis: variable u* threshold, the
+# reference variant, night-time partitioning -- the slice /query serves
+# as <VAR>_VUT_REF / <VAR>_NT_VUT_REF (Alex, 2026-10-30: "prescribe the
+# preferred version"; the other variants stay findable and readable)
+_PREFERRED_LABEL = {
+    "ustar_threshold": "VUT",
+    "nee_variant": "REF",
+    "partition_method": "NT",
+}
+
+
+def _var_id(store: str, group: str, name: str) -> str:
+    return f"{store.removesuffix('.zarr')}.{group.replace('/', '-').strip('-')}.{name}"
+
+
+async def _zarr_variants(tok: str | None) -> list[dict]:
+    """The variables a station panel holds beyond (station, time) -- the
+    ONEFlux cubes, NEE over ustar_threshold x nee_variant and the like --
+    which /query does not serve and the catalogue therefore does not list.
+    Read from each visible panel's own index, with their axis labels."""
+    cat = await _catalogue(tok)
+    ids = {v["id"] for v in cat}
+    domain = {v["zarr_store"]: v.get("domain") for v in cat}
+    groups = sorted(
+        {
+            (v["zarr_store"], v["group"])
+            for v in cat
+            if v.get("query_kind") == "station_time"
+        }
+    )
+    out = []
+    for store, group in groups:
+        base = f"/{store}/{group}"
+        hit = _cache.get(f"variants:{base}")
+        if hit and time.monotonic() - hit[0] < CACHE_S:
+            rows = hit[1]
+        else:
+            meta = (await _get(f"{base}/.zmetadata")).json()["metadata"]
+            rows = []
+            for k in meta:
+                if not k.endswith("/.zarray") or k.count("/") != 1:
+                    continue
+                name = k[:-8]
+                at = meta.get(f"{name}/.zattrs", {})
+                dims = at.get("_ARRAY_DIMENSIONS", [])
+                if (
+                    len(dims) <= 2
+                    or dims[0] != "station"
+                    or not dims[1].startswith("time")
+                ):
+                    continue
+                axes = {
+                    d: (
+                        [str(x) for x in await _read_1d(base, meta, d)]
+                        if f"{d}/.zarray" in meta
+                        else []
+                    )
+                    for d in dims[2:]
+                }
+                rows.append(
+                    {
+                        "name": name,
+                        "long_name": at.get("long_name"),
+                        "unit": at.get("units"),
+                        "dims": dims,
+                        "axes": axes,
+                    }
+                )
+            _cache[f"variants:{base}"] = (time.monotonic(), rows)
+        for r in rows:
+            vid = _var_id(store, group, r["name"])
+            sel = ", ".join(
+                f"{d}={(_PREFERRED_LABEL.get(d) if _PREFERRED_LABEL.get(d) in labs else (labs or [''])[0])!r}"
+                for d, labs in r["axes"].items()
+            )
+            recipe = (
+                f'xr.open_zarr("{POLICY.url_for(store)}/{store}", group="{group}", '
+                f'consolidated=True)["{r["name"]}"].sel({sel})'
+            )
+            prescribed = next(
+                (i for i in (f"{vid}_VUT_REF", f"{vid}_NT_VUT_REF") if i in ids), None
+            )
+            out.append(
+                {
+                    **r,
+                    "id": vid,
+                    "store": store,
+                    "group": group,
+                    "domain": domain.get(store),
+                    "prescribed": prescribed,
+                    "recipe": recipe,
+                }
+            )
+    return out
+
+
+def _as_zarr_variable(z: dict) -> Variable:
+    return Variable(
+        id=z["id"],
+        name=z["name"],
+        long_name=z.get("long_name"),
+        unit=z.get("unit"),
+        domain=z.get("domain"),
+        store=z["store"],
+        query_kind="station_time",
+        access="zarr",
+        axes=z["axes"],
+        prescribed=z["prescribed"],
+        zarr_recipe=z["recipe"],
+    )
 
 
 async def _store_attrs(store: str) -> dict:
@@ -207,6 +340,20 @@ class Variable(BaseModel):
     )
     quality_flag: str | None = None
     vocabulary_uri: str | None = None
+    access: Literal["query", "zarr"] = Field(
+        default="query",
+        description="query: estimate/get_data/aggregate serve it; zarr: a "
+        "multi-dimensional variable (e.g. the ONEFlux NEE cube) read with xarray -- "
+        "see zarr_recipe, and `prescribed` for its /query slice",
+    )
+    axes: dict[str, list[str]] | None = Field(
+        default=None, description="zarr variables: each extra axis and its labels"
+    )
+    prescribed: str | None = Field(
+        default=None,
+        description="zarr variables: the id of the preferred slice /query serves",
+    )
+    zarr_recipe: str | None = None
 
 
 class Variables(BaseModel):
@@ -225,6 +372,12 @@ class VariableDetail(Variable):
     )
     license: str | None = None
     doi: str | None = None
+    variants: list[str] | None = Field(
+        default=None,
+        description="the multi-dimensional variables this one is the PRESCRIBED "
+        "slice of; their other slices are read through zarr (describe_variable on one "
+        "gives the recipe)",
+    )
 
 
 class Estimate(BaseModel):
@@ -369,11 +522,36 @@ async def _estimate(var_id: str, params: dict, tok: str | None) -> Estimate:
             exact=False,
             note=f"more than {COUNT_MAX:,} rows",
         )
+    note = await _empty_note(var_id, params) if n == 0 else None
     return Estimate(
         id=var_id,
         rows=n,
         exact=True,
         n_stations=None if narrowed else (s or {}).get("n_stations"),
+        note=note,
+    )
+
+
+async def _empty_note(var_id: str, params: dict) -> str:
+    """Why a selection is empty: the record of the same selection without its
+    time window -- so an agent asking for 1990 learns the record starts in
+    2017 instead of widening the window until it runs out of turns."""
+    rest = {k: v for k, v in params.items() if k not in ("start", "end")}
+    if len(rest) == len(params):
+        return "no rows: nothing matches these filters at any time"
+    r = await _get(
+        "/query", {"id": var_id, **rest, "format": "arrow", "max_rows": COUNT_MAX + 1}
+    )
+    with ipc.open_stream(io.BytesIO(r.content)) as rd:
+        tab = rd.read_all()
+    tcol = next((c for c in tab.column_names if c.startswith("time")), None)
+    if tab.num_rows == 0 or tcol is None:
+        return "no rows: nothing matches these filters at any time"
+    t = tab.column(tcol).to_numpy(zero_copy_only=False).astype("datetime64[s]")
+    return (
+        f"no rows in this time window; without it the same selection runs "
+        f"{str(t.min())[:10]} to {str(t.max())[:10]}"
+        + (" (at least -- capped)" if tab.num_rows > COUNT_MAX else "")
     )
 
 
@@ -555,19 +733,45 @@ async def search_variables(
     concepts = _concepts(text)
     ask_companion = bool(_COMPANION.search(text))
     ask_nrt = bool(_NRT.search(text))
-    scored = []
-    for v in await _catalogue(_token(ctx)):
+    tok = _token(ctx)
+    # the catalogue's /query variables and, beside them, the zarr-only ones
+    cands = [
+        (
+            v,
+            v.get("shortname") or "",
+            v.get("longname") or "",
+            v.get("zarr_store"),
+            v.get("unit") or "",
+            "query",
+        )
+        for v in await _catalogue(tok)
+    ]
+    cands += [
+        (
+            z,
+            z["name"],
+            z.get("long_name") or "",
+            z["store"],
+            z.get("unit") or "",
+            "zarr",
+        )
+        for z in await _zarr_variants(tok)
+    ]
+    score_of: dict[str, int] = {}
+    for v, short, long_, st, unit, kind in cands:
         if domain and v.get("domain") != domain:
             continue
-        if store and v.get("zarr_store") != store:
+        if store and st != store:
             continue
-        short = (v.get("shortname") or "").lower()
-        long_ = (v.get("longname") or "").lower()
-        vid = v["id"].lower()
+        short, long_, vid, unit = (
+            short.lower(),
+            long_.lower(),
+            v["id"].lower(),
+            unit.lower(),
+        )
         score = 0
         if short == text.lower().strip():
             score += 20
-        unit = (v.get("unit") or "").lower()
         for alts in concepts:
             if short in alts:
                 score += 10
@@ -585,13 +789,24 @@ async def search_variables(
             score -= 8
         # a released, curated store answers a general question before
         # the near-real-time one, which is asked for by name
-        if not ask_nrt and v.get("zarr_store") in _NRT_STORES:
+        if not ask_nrt and st in _NRT_STORES:
             score -= 6
-        scored.append((-score, v["id"], v))
-    scored.sort(key=lambda t: (t[0], t[1]))
-    return Variables(
-        variables=[_as_variable(v) for _, _, v in scored[:limit]], n_matches=len(scored)
-    )
+        score_of[v["id"]] = score
+    # a zarr-only cube ranks just BELOW the slice prescribed for it: asked
+    # for "NEE", the answer is NEE_VUT_REF first and the cube next to it
+    by_id = {c[0]["id"]: c for c in cands}
+    for v, *_, kind in cands:
+        if kind == "zarr" and v["id"] in score_of and v.get("prescribed") in by_id:
+            p_ = v["prescribed"]
+            score_of[p_] = max(score_of.get(p_, 0), score_of[v["id"]] + 1)
+    ranked = sorted(score_of, key=lambda i: (-score_of[i], i))
+    variables = [
+        _as_variable(by_id[i][0])
+        if by_id[i][5] == "query"
+        else _as_zarr_variable(by_id[i][0])
+        for i in ranked[:limit]
+    ]
+    return Variables(variables=variables, n_matches=len(ranked))
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -600,8 +815,23 @@ async def describe_variable(
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> VariableDetail:
     """One variable in full: names, unit, which dataset, its coverage, how its
-    quality flag is read, licence and DOI."""
-    v = await _variable(id, _token(ctx))
+    quality flag is read, licence and DOI.  For a multi-dimensional variable
+    read through zarr (access 'zarr'), its axes with their labels, the slice
+    /query serves (prescribed) and an xarray line for any other slice."""
+    tok = _token(ctx)
+    zs = await _zarr_variants(tok)
+    z = next((z for z in zs if z["id"] == id), None)
+    if z is not None:
+        a = await _store_attrs(z["store"])
+        return VariableDetail(
+            **_as_zarr_variable(z).model_dump(),
+            dataset_title=a.get("title", z["store"]),
+            time_coverage_start=a.get("time_coverage_start"),
+            time_coverage_end=a.get("time_coverage_end"),
+            license=a.get("license"),
+            doi=a.get("collection_doi"),
+        )
+    v = await _variable(id, tok)
     store = v.get("zarr_store", "")
     a = await _store_attrs(store)
     guide = a.get("agent_guide") or {}
@@ -614,6 +844,7 @@ async def describe_variable(
         quality_control=qc if isinstance(qc, str) else (json.dumps(qc) if qc else None),
         license=a.get("license"),
         doi=a.get("collection_doi"),
+        variants=[z["id"] for z in zs if z["prescribed"] == id] or None,
     )
 
 
@@ -846,7 +1077,13 @@ async def aggregate(
     name = var.get("shortname") or id.rsplit(".", 1)[-1]
     if name not in tab.column_names:
         raise ToolError(f"{id}: the answer carries no column {name!r}")
-    v = np.asarray(tab.column(name).to_numpy(zero_copy_only=False), dtype=float)
+    try:
+        v = np.asarray(tab.column(name).to_numpy(zero_copy_only=False), dtype=float)
+    except (TypeError, ValueError):
+        raise ToolError(
+            f"{id} is not numeric ({tab.schema.field(name).type}): there is "
+            "nothing to average -- use get_data to list its values"
+        ) from None
     keys: list[tuple[str, np.ndarray]] = []
     if by.startswith("station"):
         if "station" not in tab.column_names:

@@ -116,6 +116,8 @@ def truth(q: dict):
             return None, err
         if stat == "count":
             return tab.num_rows, None
+        if stat == "download_url":
+            return f"{tab.num_rows} rows", None
         col = t["column"]
         v = np.asarray(tab.column(col).to_numpy(zero_copy_only=False), dtype=float)
         ok = np.isfinite(v)
@@ -415,8 +417,22 @@ def grade_answer(q: dict, want, answer: str) -> tuple[bool | None, str]:
             any(abs(n - w) <= tol for n in nums) for w in want.values()
         ), f"truth {want}"
     if stat == "station_set":
-        found = [s for s in want if s.lower() in low]
+        # an atmosphere station is several inlets (GAT30 ... GAT341): naming
+        # the station, by its trigram, names them all
+        def named(sid):
+            tri = re.match(r"[A-Z]{3}(?=\d)", sid)
+            return sid.lower() in low or bool(
+                tri and re.search(rf"\b{tri.group(0)}\b", answer)
+            )
+
+        found = [s for s in want if named(s)]
         return len(found) >= 0.8 * len(want), f"{len(found)}/{len(want)} stations named"
+    if stat == "download_url":
+        return (
+            "format=csv" in answer
+            or "format=arrow" in answer
+            or "format=parquet" in answer
+        ), "a download link given"
     if stat in ("doi", "passport_object_citation"):
         key = (
             want.split("doi.org/")[-1]

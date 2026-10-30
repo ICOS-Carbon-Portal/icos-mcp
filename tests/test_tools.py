@@ -166,7 +166,10 @@ async def test_find_stations_near_a_point_is_sorted_by_distance():
 @pytest.mark.parametrize(
     "args, want",
     [
-        ({"id": "icos-fluxnet._combined-fluxnet_dd.NEE", "country": "FI"}, "FI-Hyy"),
+        (
+            {"id": "icos-fluxnet._combined-fluxnet_dd.NEE_VUT_REF", "country": "FI"},
+            "FI-Hyy",
+        ),
         (
             {
                 "id": "icos-eco-nrt._combined-meteo.TA",
@@ -241,3 +244,52 @@ async def test_aggregate_by_station_and_month():
     assert {g["station"] for g in d["groups"]} == {"JFJ13", "IZO29"}
     assert min(g["month"] for g in d["groups"]) == "2024-01"
     assert all(g["n"] > 0 for g in d["groups"])
+
+
+NEE_DD = "icos-fluxnet._combined-fluxnet_dd"
+
+
+async def test_nee_finds_the_prescribed_slice_first_and_the_cube_next():
+    r = (
+        await call(
+            "search_variables", {"text": "NEE", "domain": "ecosystem", "limit": 6}
+        )
+    ).structured_content["variables"]
+    assert r[0]["id"].endswith(".NEE_VUT_REF") and r[0]["access"] == "query"
+    cube = next(v for v in r if v["access"] == "zarr")
+    assert cube["prescribed"] == cube["id"] + "_VUT_REF"
+    assert "ustar_threshold" in cube["axes"] and "REF" in cube["axes"]["nee_variant"]
+
+
+async def test_the_cube_is_described_with_its_axes_and_a_zarr_recipe():
+    d = (await call("describe_variable", {"id": f"{NEE_DD}.NEE"})).structured_content
+    assert d["access"] == "zarr" and d["prescribed"] == f"{NEE_DD}.NEE_VUT_REF"
+    assert set(d["axes"]["ustar_threshold"]) == {"VUT", "CUT"}
+    assert 'group="_combined/fluxnet_dd"' in d["zarr_recipe"]
+    assert "ustar_threshold='VUT', nee_variant='REF'" in d["zarr_recipe"]
+    s = (
+        await call("describe_variable", {"id": f"{NEE_DD}.NEE_VUT_REF"})
+    ).structured_content
+    assert s["access"] == "query" and s["variants"] == [f"{NEE_DD}.NEE"]
+
+
+async def test_data_tools_on_the_cube_point_to_the_slice_and_the_recipe():
+    r = await call("get_data", {"id": f"{NEE_DD}.NEE", "station": ["SE-Htm"]})
+    assert r.is_error
+    msg = r.content[0].text
+    assert f"{NEE_DD}.NEE_VUT_REF" in msg and "xr.open_zarr(" in msg
+
+
+async def test_an_empty_estimate_says_where_the_record_is():
+    e = (
+        await call(
+            "estimate",
+            {
+                "id": CO2,
+                "station": ["HTM150"],
+                "start": "1990-01-01",
+                "end": "1991-01-01",
+            },
+        )
+    ).structured_content
+    assert e["rows"] == 0 and "runs" in e["note"]

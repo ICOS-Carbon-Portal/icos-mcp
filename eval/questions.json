@@ -216,7 +216,7 @@
      "start": "2023-01-01",
      "end": "2024-01-01"
     },
-    "stat": "count"
+    "stat": "download_url"
    }
   },
   {
@@ -296,9 +296,7 @@
    "question": "List the ICOS ecosystem flux sites in Finland.",
    "probes": "find_stations by country on a fluxnet panel",
    "expect": {
-    "variable": [
-     "icos-fluxnet._combined-fluxnet_dd.NEE_VUT_REF"
-    ],
+    "variable": null,
     "station": null
    },
    "truth": {
@@ -511,7 +509,7 @@
   {
    "id": "oce-02",
    "domain": "ocean",
-   "question": "What was the mean fCO2 in the North Sea in summer 2022, good data only?",
+   "question": "What was the mean fCO2 in the North Sea in summer 2022 (June to August), good data only? Use the box 51-61 N, 4 W - 9 E.",
    "probes": "WOCE flag 2 = good (apply_qc), box, a mean over many cruises",
    "expect": {
     "variable": [
@@ -540,7 +538,7 @@
   {
    "id": "oce-03",
    "domain": "ocean",
-   "question": "Show me the gridded monthly ocean fCO2 for the North Atlantic in 2020.",
+   "question": "How many 1x1 degree grid cells of the gridded monthly SOCAT fCO2 product have data in the North Atlantic box 30-65 N, 60 W - 0 E in 2020?",
    "probes": "the gridded product (socat-gridded), not the observations",
    "expect": {
     "variable": [

@@ -1,0 +1,6 @@
+{
+ "url": "https://zarr.icos-cp.eu/summary?id=icos-obspack.co2.co2&start=1990-01-01&end=1991-01-01",
+ "status": 200,
+ "content_type": "application/json",
+ "body": "eyJxdWVyeV9raW5kIjoic3RhdGlvbl90aW1lIiwidmFyaWFibGUiOiJjbzIiLCJzdG9yZSI6Imljb3Mtb2JzcGFjay56YXJyIiwibl9vYnMiOjc1MTUsIm5fc3RhdGlvbnMiOjEsIm5fdGltZXN0ZXBzIjo4NzYwLCJlc3RfYnl0ZXMiOjgyNjY1MCwiY2FwcGVkX2F0Ijo1MDAwMDAsImxhdF9taW4iOi0yMS4wNzk2LCJsYXRfbWF4Ijo4MS4zNjA1LCJsb25fbWluIjotNDguMTY5NywibG9uX21heCI6MTI4Ljk3NDIsInRpbWVfbWluIjoiMTk5MC0wMS0wMVQwMDozMDowMFoiLCJ0aW1lX21heCI6IjE5OTAtMTItMzFUMjM6MzA6MDBaIn0="
+}

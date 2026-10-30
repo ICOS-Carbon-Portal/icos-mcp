@@ -1,4 +1,4 @@
-"""Run the evaluation set (eval/questions.json) -- docs/icos-mcp-plan.md, Quality 3.
+"""Run the evaluation set (eval/questions.json) -- docs/plan.md, Quality 3.
 
 For each question:
 

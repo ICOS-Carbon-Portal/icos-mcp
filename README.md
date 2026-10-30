@@ -4,7 +4,7 @@ ICOS carbon and greenhouse-gas observations for AI assistants, over the
 Model Context Protocol.  A thin server over the ICOS zarr proxy
 (`https://zarr.icos-cp.eu`): every number comes from the proxy, and every
 data answer carries the citation, licence and DOI.  The plan, and why it
-is built this way, is [`../docs/icos-mcp-plan.md`](../docs/icos-mcp-plan.md).
+is built this way, is [`docs/plan.md`](docs/plan.md).
 
 Phases 1 and 2: seven read-only tools, five resources, three prompts, and
 a per-store access policy.

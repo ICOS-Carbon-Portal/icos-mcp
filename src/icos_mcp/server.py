@@ -1,6 +1,6 @@
 """The ICOS MCP server: ICOS data for AI assistants, over the zarr proxy.
 
-A thin translator (docs/icos-mcp-plan.md).  Every number comes from the
+A thin translator (docs/plan.md).  Every number comes from the
 proxy (ICOS_PROXY, or the proxy of ICOS_MCP_CONFIG); this server adds no
 data path, only shapes answers for a language model's context, and
 offers only the stores access.py allows the caller -- default-deny:

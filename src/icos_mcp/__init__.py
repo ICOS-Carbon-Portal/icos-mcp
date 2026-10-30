@@ -1,1 +1,1 @@
-"""ICOS MCP server -- see server.py and docs/icos-mcp-plan.md."""
+"""ICOS MCP server -- see server.py and docs/plan.md."""

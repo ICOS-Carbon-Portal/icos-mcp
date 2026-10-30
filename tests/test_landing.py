@@ -65,3 +65,13 @@ async def test_the_static_files_are_served_and_nothing_else():
 async def test_health():
     r = await _get("/health")
     assert r.status_code == 200 and r.json()["status"] == "ok"
+
+
+async def test_the_web_instructions_name_the_network_setting():
+    # Claude Code on the web: a repository's .mcp.json loads the server,
+    # but the cloud environment's default "Trusted" network level does not
+    # reach this host -- the page must say which setting lets it through
+    page = (await _get("/")).text
+    assert "&quot;type&quot;: &quot;http&quot;, &quot;url&quot;: &quot;https://mcp.icos-cp.eu/mcp&quot;" in page
+    assert "<b>Network access</b>" in page and "<i>Trusted</i>" in page
+    assert page.count("<code>mcp.icos-cp.eu</code>") == 2

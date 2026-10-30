@@ -17,6 +17,7 @@ import html
 import math
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 PUBLIC_URL = os.environ.get("ICOS_MCP_PUBLIC_URL", "https://mcp.icos-cp.eu").rstrip("/")
 
@@ -308,6 +309,8 @@ def render(
     )
     dom_list = ", ".join(known_doms) or "none"
     snippet_cc = f"claude mcp add --transport http icos {endpoint}"
+    # the host a cloud environment's network allowlist must name
+    host = urlsplit(endpoint).hostname or endpoint
     snippet_json = (
         f'{{"mcpServers": {{"icos": {{"type": "http", "url": "{endpoint}"}}}}}}'
     )
@@ -356,12 +359,18 @@ def render(
 answer carries its RO-Crate data passport.</p></div>
 <div class="snips">
 <div class="snip"><div>claude.ai, Claude Desktop and Claude Code on the web<button type="button">Copy</button></div><pre>{e(endpoint)}</pre>
-<p>Add a custom connector with this URL in your connector settings, then start a new chat or session.
-In a Claude Code session on the web, <code>claude mcp add</code> does not last: the container is replaced.</p></div>
+<p>Add a custom connector with this URL at <a href="https://claude.ai/customize/connectors">claude.ai &rsaquo; Connectors</a>
+(on Team and Enterprise plans an admin adds it), then start a new chat or session.
+A connector reaches Claude Code on the web sessions too, without any network setting.</p></div>
 <div class="snip"><div>Claude Code in your terminal or IDE<button type="button">Copy</button></div><pre>{e(snippet_cc)}</pre>
-<p>For the sessions you start on that machine from then on.</p></div>
+<p>For the sessions you start on that machine from then on. In a session on the web it does
+not last: the session's machine is replaced.</p></div>
 <div class="snip"><div>A repository's .mcp.json, and other clients<button type="button">Copy</button></div><pre>{e(snippet_json)}</pre>
-<p>At the root of a repository, every Claude Code session on it loads the server, on the web too.
+<p>At the root of a repository, on the branch a session starts from, every Claude Code session
+on it loads the server. On the web the session must also be allowed to reach
+<code>{e(host)}</code>: in the cloud environment's settings set <b>Network access</b> to
+<i>Full</i>, or to <i>Custom</i> with <code>{e(host)}</code> among the allowed domains &mdash;
+the default <i>Trusted</i> list does not include it. Check with <code>/mcp</code>.
 Most other MCP clients take the same block in their own settings.</p></div>
 </div></section>
 

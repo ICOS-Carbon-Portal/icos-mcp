@@ -106,6 +106,8 @@ letter-spacing:.1em;text-transform:uppercase}
 .hero h1{margin:0;max-width:780px;font-weight:800;font-size:clamp(36px,5.2vw,62px);
 line-height:1.08;letter-spacing:-.01em}
 .hero p{margin:0;max-width:620px;font-size:19px;line-height:1.6;color:#E6F2F4}
+.hero p.what{font-size:16px;padding-left:14px;border-left:3px solid #F4D35E}
+.hero p.what a{color:#fff;font-weight:700}
 .cta{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
 .btn{display:inline-flex;align-items:center;min-height:48px;padding:0 26px;border-radius:4px;
 font-weight:700;font-size:16px;text-decoration:none;border:2px solid #fff;color:#fff}
@@ -333,6 +335,7 @@ def render(
 <div class="kicker"><span class="bar" style="background:{ACCENT}"></span>Model Context Protocol server</div>
 <h1>ICOS greenhouse-gas observations, ready for your AI assistant</h1>
 <p>Find atmosphere, ocean and ecosystem data, size a selection, compute statistics on the server and fetch the data — with the citation, licence and DOI of the measurements in every answer.</p>
+<p class="what"><a href="https://modelcontextprotocol.io/docs/2026-07-28/getting-started/intro">MCP</a> is an open standard that lets AI assistants such as Claude or ChatGPT use outside tools and data.</p>
 <div class="cta"><a class="btn primary" href="#connect">Connect your assistant</a>
 <a class="btn" href="{e(zarr_url)}/">Explore the zarr datasets</a></div>
 <code class="endpoint">{e(endpoint)} · streamable HTTP</code>

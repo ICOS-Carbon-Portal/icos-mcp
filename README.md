@@ -72,3 +72,16 @@ reviewer per domain before it is relied on; the runner is not written yet.
 This server is the ORACLE for the M9 port (`mcpd`, plan phase 7): its tool
 names, descriptions and answer shapes are the contract the port is
 replayed against, so change them deliberately.
+
+## Licence
+
+Copyright (C) 2026 ICOS ERIC -- Carbon Portal.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version.  See [`LICENSE`](LICENSE).
+
+The DATA this server serves are not covered by this licence: each answer
+carries the licence of its dataset (ICOS data are CC BY 4.0) and the
+citation to give with it.

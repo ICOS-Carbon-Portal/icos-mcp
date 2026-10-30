@@ -1,8 +1,9 @@
 """The ICOS MCP server: ICOS data for AI assistants, over the zarr proxy.
 
 A thin translator (docs/icos-mcp-plan.md).  Every number comes from the
-proxy at ICOS_PROXY; this server adds no data path, only shapes answers
-for a language model's context:
+proxy (ICOS_PROXY, or the proxy of ICOS_MCP_CONFIG); this server adds no
+data path, only shapes answers for a language model's context, and
+offers only the stores access.py allows the caller -- default-deny:
 
 * data answers carry a few rows, the total, a download URL for the whole
   selection, and the citation, licence and DOI from the data passport;
@@ -29,15 +30,16 @@ from urllib.parse import urlencode
 import httpx
 import numcodecs
 import numpy as np
-from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp_types import ToolAnnotations
 from pyarrow import ipc
 from pydantic import BaseModel, Field
 
-from icos_mcp import cassette
+from icos_mcp import access, cassette
 
-PROXY = os.environ.get("ICOS_PROXY", "https://zarr.icos-cp.eu").rstrip("/")
+POLICY = access.load()
+PROXY = POLICY.proxy
 VERSION = "0.2.0"
 
 ROWS_DEFAULT = 100  # rows get_data returns unless asked
@@ -71,7 +73,7 @@ mcp = MCPServer(
     name="icos",
     title="ICOS carbon and greenhouse-gas observations",
     version=VERSION,
-    website_url=PROXY,
+    website_url=POLICY.public_url,
     instructions=INSTRUCTIONS,
 )
 
@@ -87,7 +89,10 @@ def _http() -> httpx.AsyncClient:
         _clients[loop] = httpx.AsyncClient(
             base_url=PROXY,
             timeout=120,
-            headers={"User-Agent": f"icos-mcp/{VERSION}"},
+            headers={
+                "User-Agent": f"icos-mcp/{VERSION}",
+                **({"Host": POLICY.proxy_host} if POLICY.proxy_host else {}),
+            },
             transport=cassette.transport(),
         )
     return _clients[loop]
@@ -120,12 +125,35 @@ async def _cached_json(path: str) -> Any:
     return v
 
 
-async def _catalogue() -> list[dict]:
-    return await _cached_json("/variables")
+def _token(ctx: Context | None) -> str | None:
+    """The caller's token.  A request that came over HTTP carries headers,
+    and only its own `Authorization: Bearer` counts; a local caller (stdio,
+    in-process) has none and is the server's own operator, whose token is
+    ICOS_MCP_TOKEN.  The environment never speaks for an HTTP caller."""
+    try:
+        h = ctx.headers if ctx is not None else None
+    except ValueError:
+        h = None
+    if h is not None:
+        auth = h.get("authorization") or h.get("Authorization") or ""
+        return auth[7:].strip() or None if auth.lower().startswith("bearer ") else None
+    return os.environ.get("ICOS_MCP_TOKEN") or None
 
 
-async def _variable(var_id: str) -> dict:
-    for v in await _catalogue():
+def _visible(store: str, tok: str | None) -> bool:
+    return POLICY.allowed(store, tok)
+
+
+async def _catalogue(tok: str | None) -> list[dict]:
+    return [
+        v
+        for v in await _cached_json("/variables")
+        if _visible(v.get("zarr_store", ""), tok)
+    ]
+
+
+async def _variable(var_id: str, tok: str | None) -> dict:
+    for v in await _catalogue(tok):
         if v["id"] == var_id:
             return v
     raise ToolError(f"no variable {var_id!r}; search_variables lists the ids")
@@ -291,8 +319,8 @@ async def _count_arrow(params: dict) -> int:
         return sum(b.num_rows for b in rd)
 
 
-async def _estimate(var_id: str, params: dict) -> Estimate:
-    await _variable(var_id)  # an unknown id is named, not a proxy 404
+async def _estimate(var_id: str, params: dict, tok: str | None) -> Estimate:
+    await _variable(var_id, tok)  # an unknown id is named, not a proxy 404
     s = None
     try:
         s = (
@@ -388,13 +416,16 @@ READ_ONLY = ToolAnnotations(
 
 
 @mcp.tool(annotations=READ_ONLY)
-async def list_datasets() -> Datasets:
+async def list_datasets(ctx: Context) -> Datasets:
     """List the ICOS datasets: one per data store, with domain (atmosphere,
     ocean, ecosystem), time and space coverage, licence and DOI."""
     root = await _cached_json("/")
-    cat = await _catalogue()
+    tok = _token(ctx)
+    cat = await _catalogue(tok)
     out = []
     for store in root["stores"]:
+        if not _visible(store, tok):
+            continue
         a = await _store_attrs(store)
         name = store.removesuffix(".zarr")
         out.append(
@@ -412,8 +443,8 @@ async def list_datasets() -> Datasets:
                 license=a.get("license"),
                 doi=a.get("collection_doi"),
                 n_variables=sum(1 for v in cat if v.get("zarr_store") == store),
-                agent_guide_url=f"{PROXY}/{store}/agent_guide",
-                croissant_url=f"{PROXY}/{store}/croissant",
+                agent_guide_url=f"{POLICY.url_for(store)}/{store}/agent_guide",
+                croissant_url=f"{POLICY.url_for(store)}/{store}/croissant",
             )
         )
     return Datasets(datasets=out)
@@ -514,6 +545,7 @@ async def search_variables(
         str | None, Field(description="limit to one store, e.g. icos-obspack.zarr")
     ] = None,
     limit: Annotated[int, Field(ge=1, le=50)] = 15,
+    ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Variables:
     """Find variable ids in the ICOS catalogue by name, quantity or unit.
     The ids are what estimate and get_data take.  Primary measurements come
@@ -522,7 +554,7 @@ async def search_variables(
     ask_companion = bool(_COMPANION.search(text))
     ask_nrt = bool(_NRT.search(text))
     scored = []
-    for v in await _catalogue():
+    for v in await _catalogue(_token(ctx)):
         if domain and v.get("domain") != domain:
             continue
         if store and v.get("zarr_store") != store:
@@ -563,10 +595,11 @@ async def search_variables(
 @mcp.tool(annotations=READ_ONLY)
 async def describe_variable(
     id: Annotated[str, Field(description="a variable id from search_variables")],
+    ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> VariableDetail:
     """One variable in full: names, unit, which dataset, its coverage, how its
     quality flag is read, licence and DOI."""
-    v = await _variable(id)
+    v = await _variable(id, _token(ctx))
     store = v.get("zarr_store", "")
     a = await _store_attrs(store)
     guide = a.get("agent_guide") or {}
@@ -620,9 +653,11 @@ async def estimate(
     height_min: float | None = None,
     height_max: float | None = None,
     apply_qc: ApplyQc = False,
+    ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Estimate:
     """How big a selection is -- rows, stations, time span -- without fetching
     it.  Call this before get_data."""
+    tok = _token(ctx)
     return await _estimate(
         id,
         _filters(
@@ -638,6 +673,7 @@ async def estimate(
             height_max,
             apply_qc,
         ),
+        tok,
     )
 
 
@@ -663,12 +699,14 @@ async def get_data(
             description="rows to return; the whole selection is at download_url",
         ),
     ] = ROWS_DEFAULT,
+    ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Data:
     """Observations for one variable, filtered by box, time, station, cruise,
     height and quality control.  Returns at most max_rows rows as a table,
     the total, a download URL for the whole selection, and the citation the
     user must be given with any use of the data."""
-    await _variable(id)
+    tok = _token(ctx)
+    var = await _variable(id, tok)
     params = {
         "id": id,
         **_filters(
@@ -690,7 +728,7 @@ async def get_data(
     rows = rows[:max_rows]
     total: int | None = len(rows)
     if truncated:
-        est = await _estimate(id, {k: v for k, v in params.items() if k != "id"})
+        est = await _estimate(id, {k: v for k, v in params.items() if k != "id"}, tok)
         total = est.rows
     cols: list[str] = []
     for r in rows:
@@ -704,7 +742,8 @@ async def get_data(
         rows_returned=len(rows),
         rows_total=total,
         truncated=truncated,
-        download_url=f"{PROXY}/query?{urlencode({**params, 'format': 'csv'})}",
+        download_url=f"{POLICY.url_for(var['zarr_store'])}/query?"
+        f"{urlencode({**params, 'format': 'csv'})}",
         citation=_citation(passport),
     )
 
@@ -712,10 +751,11 @@ async def get_data(
 @mcp.tool(annotations=READ_ONLY)
 async def get_citation(
     id: Annotated[str, Field(description="a variable id from search_variables")],
+    ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Citation:
     """How to cite a variable's data: the citation text, licence and DOI from
     its data passport."""
-    await _variable(id)
+    await _variable(id, _token(ctx))
     _, passport = await _query_rows({"id": id, "max_rows": 1})
     return _citation(passport)
 
@@ -849,11 +889,12 @@ async def find_stations(
         str | None, Field(description="two-letter code, e.g. SE")
     ] = None,
     limit: Annotated[int, Field(ge=1, le=200)] = 50,
+    ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> StationList:
     """The stations that carry a variable: id, name, position, sampling height,
     country, ecosystem -- near a point (sorted by distance), in a box, by name
     or by country.  The ids are what estimate and get_data take as station=."""
-    rows = await _station_table(await _variable(id))
+    rows = await _station_table(await _variable(id, _token(ctx)))
     out = []
     for r in rows:
         lat, lon = r.get("latitude"), r.get("longitude")
@@ -887,14 +928,21 @@ def _store_name(store: str) -> str:
     return store if store.endswith(".zarr") else f"{store}.zarr"
 
 
+def _visible_store(store: str, ctx: Context) -> str:
+    name = _store_name(store)
+    if not _visible(name, _token(ctx)):
+        raise ResourceNotFoundError(f"no store {store!r}; list_datasets lists them")
+    return name
+
+
 @mcp.resource(
     "icos://stores/{store}/agent-guide",
     mime_type="application/json",
     description="how to open and read one ICOS store: layout, coordinates, QC, "
     "citation -- written for agents",
 )
-async def agent_guide(store: str) -> str:
-    return (await _get(f"/{_store_name(store)}/agent_guide")).text
+async def agent_guide(store: str, ctx: Context) -> str:
+    return (await _get(f"/{_visible_store(store, ctx)}/agent_guide")).text
 
 
 @mcp.resource(
@@ -903,17 +951,21 @@ async def agent_guide(store: str) -> str:
     description="the store's Croissant (ML dataset) description: every queryable "
     "variable with its unit",
 )
-async def croissant(store: str) -> str:
-    return (await _get(f"/{_store_name(store)}/croissant")).text
+async def croissant(store: str, ctx: Context) -> str:
+    return (await _get(f"/{_visible_store(store, ctx)}/croissant")).text
 
 
 @mcp.resource(
     "icos://catalogue",
     mime_type="application/json",
-    description="every queryable variable: id, names, unit, QC flag, store",
+    description="every queryable variable of the public stores: id, names, unit, QC "
+    "flag, store",
 )
 async def catalogue() -> str:
-    return json.dumps(await _catalogue(), ensure_ascii=False)
+    # a static resource is not told who is asking (the SDK passes it no
+    # context), so it lists the PUBLIC stores only; a token holder finds
+    # the rest through search_variables
+    return json.dumps(await _catalogue(None), ensure_ascii=False)
 
 
 @mcp.resource(
@@ -988,7 +1040,30 @@ def main() -> None:
     )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8090)
+    ap.add_argument(
+        "--hash-token",
+        metavar="TOKEN",
+        help="print the SHA-256 line a tokens_file takes for TOKEN, and exit",
+    )
+    ap.add_argument(
+        "--show-policy",
+        action="store_true",
+        help="print which stores are offered, and to whom, and exit",
+    )
     a = ap.parse_args()
+    if a.hash_token:
+        print(access.hash_token(a.hash_token))
+        return
+    if a.show_policy:
+        print(
+            f"proxy {POLICY.proxy}  Host {POLICY.proxy_host or '-'}  links {POLICY.public_url}"
+        )
+        for r in POLICY.rules:
+            print(
+                f"  {r.match:24s} {r.access:6s} {len(r.tokens)} token(s)  {r.public_url or ''}"
+            )
+        print("  anything else          hidden")
+        return
     if a.transport == "stdio":
         mcp.run("stdio")
     else:

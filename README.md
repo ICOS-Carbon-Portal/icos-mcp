@@ -6,7 +6,8 @@ Model Context Protocol.  A thin server over the ICOS zarr proxy
 data answer carries the citation, licence and DOI.  The plan, and why it
 is built this way, is [`../docs/icos-mcp-plan.md`](../docs/icos-mcp-plan.md).
 
-Phases 1 and 2: seven read-only tools, five resources, three prompts.
+Phases 1 and 2: seven read-only tools, five resources, three prompts, and
+a per-store access policy.
 
 | tool | does |
 |---|---|
@@ -24,6 +25,29 @@ Phases 1 and 2: seven read-only tools, five resources, three prompts.
     uv run icos-mcp --transport streamable-http --port 8090   # http://127.0.0.1:8090/mcp
 
 `ICOS_PROXY` points it at another proxy (the RC, a test instance).
+
+## Which stores it offers
+
+DEFAULT-DENY: a store is offered only when a rule names it, whatever the
+proxy behind the server would serve.  Without a config file the rules are
+exactly the public stores of zarr.icos-cp.eu (`config/public.json` writes
+them out).  `ICOS_MCP_CONFIG=/path/to/config.json` sets the proxy, the
+`Host` header to send it, the base of download links, and an ordered list
+of store rules, each `public` or `token`:
+
+    uv run icos-mcp --show-policy          # what this config offers, to whom
+    uv run icos-mcp --hash-token TOKEN     # the line a tokens_file takes
+
+`config/ct122.example.json` is the shape for running beside zpd on CT122,
+where zpd answers for EVERY store on the machine (the shuttle, GlobalView,
+AGAGE): the public stores by name, those three behind tokens, anything
+else hidden.  A token store is offered to an HTTP caller sending
+`Authorization: Bearer <token>` whose SHA-256 is in its `tokens_file`
+(plain tokens are never stored); a local stdio caller is the operator and
+uses `ICOS_MCP_TOKEN`, which never speaks for an HTTP caller.  A hidden
+store answers exactly as one that does not exist, and the static
+`icos://catalogue` resource -- which the protocol does not tell who is
+asking -- lists the public stores only.
 
 In Claude Code:
 

@@ -1,0 +1,12 @@
+{
+  "_about": "What the server offers with NO config file, written out: zarr.icos-cp.eu's public stores, read through the public proxy.",
+  "proxy": "https://zarr.icos-cp.eu",
+  "public_url": "https://zarr.icos-cp.eu",
+  "stores": [
+    {"match": "icos-obspack*", "access": "public"},
+    {"match": "icos-socat*", "access": "public"},
+    {"match": "icos-fluxnet*", "access": "public"},
+    {"match": "socat*", "access": "public"},
+    {"match": "icos-eco-nrt*", "access": "public"}
+  ]
+}

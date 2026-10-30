@@ -1,0 +1,22 @@
+{
+  "_about": "Inside CT122: straight to zpd on loopback, as the host name that sees every store ('zarr-proxy' in HOST_STORE_MAP). zpd then serves the shuttle, GlobalView and AGAGE too, so THIS list is the only thing between them and the public: the public stores by name, the others behind tokens, anything unlisted hidden. Token files hold one SHA-256 per line: icos-mcp --hash-token TOKEN.",
+  "proxy": "http://127.0.0.1:8081",
+  "proxy_host": "zarr-proxy",
+  "public_url": "https://zarr.icos-cp.eu",
+  "stores": [
+    {"match": "icos-obspack*", "access": "public"},
+    {"match": "icos-socat*", "access": "public"},
+    {"match": "icos-fluxnet*", "access": "public"},
+    {"match": "socat*", "access": "public"},
+    {"match": "icos-eco-nrt*", "access": "public"},
+    {"match": "fluxnet-shuttle*", "access": "token",
+     "tokens_file": "/etc/icos-mcp/tokens/shuttle.sha256",
+     "public_url": "https://fluxnet-shuttle-zarr.icos-cp.eu"},
+    {"match": "noaa-obspack*", "access": "token",
+     "tokens_file": "/etc/icos-mcp/tokens/globalview.sha256",
+     "public_url": "https://globalview-zarr.icos-cp.eu"},
+    {"match": "agage*", "access": "token",
+     "tokens_file": "/etc/icos-mcp/tokens/agage.sha256",
+     "public_url": "https://agage-zarr.icos-cp.eu"}
+  ]
+}

@@ -261,20 +261,26 @@ citation in every answer."*
   source of truth; the MCP server must read them, never copy them, so it
   cannot drift from the proxy.
 
-## Open decisions (Alex)
+## Decisions (Alex, 2026-10-30) -- none open
 
-1. **Where it lives**: `zarr.icos-cp.eu/mcp` (one name, simplest) or
-   `mcp.icos-cp.eu` (room for a wider Carbon Portal server later).
-2. **Which repository**: a new `ICOS-Carbon-Portal/icos-mcp`, or
-   `icos-zarr/apps/mcp` beside the viewers (shares their deploy and CI).
-3. ~~**Scope of stores**~~ -- DECIDED 2026-10-30 (Alex: "make sure that MCP
-   only offers the stores that are public ... what is public and what
-   needs for example a token needs to be configurable"): `access.py`,
-   default-deny, the public stores of zarr.icos-cp.eu unless
-   `ICOS_MCP_CONFIG` says otherwise, token stores by SHA-256 of a bearer
-   token.  Verified over HTTP beside zpd on CT122, where zpd serves all
-   nine stores.
-4. **Usage logging**: which tool calls to log for the phase-4 decision,
-   within what ICOS's privacy policy allows (the proxy already
-   anonymises the client address to /24).
-5. **Who writes the question set**: one person per domain is enough.
+1. **Where it lives: `mcp.icos-cp.eu`**, its own name (room for a wider
+   Carbon Portal server later).  NB: the name resolves today to
+   194.47.223.139 (fsicos2), not to icos4's 130.235.92.135 where caddy
+   serves the zarr names -- DNS has to move before it can serve.
+2. **Repository: `ICOS-Carbon-Portal/icos-mcp`**, private, GPL-3.0-or-later
+   -- done, split out of zarrm9 with its history.
+3. **Stores: internal behind a token** -- `access.py`, default-deny, the
+   public stores of zarr.icos-cp.eu unless `ICOS_MCP_CONFIG` says
+   otherwise, token stores by SHA-256 of a bearer token.  Verified over
+   HTTP beside zpd on CT122, where zpd serves all nine stores.
+4. **Usage logging: none in the MCP server.**  The data passports the
+   proxy mints for every data answer are the usage record, and the zarr
+   proxy will do the Matomo logging.  Consequence for deployment: the
+   proxy must see the END USER, not the MCP server, so the server
+   forwards the caller's address to the proxy -- otherwise every MCP
+   user is one passport session and one Matomo visitor, the bug the
+   sidecar's realip fix closed for the zarr names on 2026-09-08.
+5. **The question set: generated** (`eval/questions.json`, 30 questions,
+   every id, station and truth query checked against the live proxy);
+   domain review is work for later.  Qwen (qwen3-8-27b, the Spark) answers
+   27 of 28 right after the fixes the set itself drove.

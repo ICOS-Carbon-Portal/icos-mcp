@@ -1850,6 +1850,26 @@ async def landing_page(request):
     )
 
 
+@mcp.custom_route("/static/{name}", methods=["GET"], include_in_schema=False)
+async def static_file(request):
+    """The page's photos and logos, from the package's own `static/` folder;
+    a name is looked up in that folder's listing, never joined as a path."""
+    from starlette.responses import PlainTextResponse, Response
+
+    name = request.path_params["name"]
+    files = {
+        p.name: p for p in landing.STATIC.iterdir() if p.suffix in landing.STATIC_TYPES
+    }
+    if name not in files:
+        return PlainTextResponse("not found", status_code=404)
+    p = files[name]
+    return Response(
+        p.read_bytes(),
+        media_type=landing.STATIC_TYPES[p.suffix],
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
 async def health(request):
     from starlette.responses import JSONResponse

@@ -129,6 +129,7 @@ padding:6px 8px 6px 20px;border-bottom:1px solid #DEE2E6;font-size:14px;font-wei
 .snip button{min-height:44px;padding:0 16px;border-radius:4px;border:1px solid #00708A;
 background:#fff;color:#00708A;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
 .snip pre{margin:0;padding:18px 20px;overflow-x:auto;font-size:14px;line-height:1.6}
+.snip p{margin:0;padding:0 20px 16px;font-size:14px;line-height:1.5;color:#495057}
 .band{background:#F8F9FA;border-top:1px solid #DEE2E6;border-bottom:1px solid #DEE2E6}
 .band>.wrap,#tools{padding-top:88px;padding-bottom:88px;display:flex;flex-direction:column;gap:40px}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:24px}
@@ -354,8 +355,14 @@ def render(
 <a href="{e(zarr_url)}/">ICOS zarr service</a>: every number comes from there, and every data
 answer carries its RO-Crate data passport.</p></div>
 <div class="snips">
-<div class="snip"><div>Claude Code<button type="button">Copy</button></div><pre>{e(snippet_cc)}</pre></div>
-<div class="snip"><div>Claude Desktop, VS Code and other clients<button type="button">Copy</button></div><pre>{e(snippet_json)}</pre></div>
+<div class="snip"><div>claude.ai, Claude Desktop and Claude Code on the web<button type="button">Copy</button></div><pre>{e(endpoint)}</pre>
+<p>Add a custom connector with this URL in your connector settings, then start a new chat or session.
+In a Claude Code session on the web, <code>claude mcp add</code> does not last: the container is replaced.</p></div>
+<div class="snip"><div>Claude Code in your terminal or IDE<button type="button">Copy</button></div><pre>{e(snippet_cc)}</pre>
+<p>For the sessions you start on that machine from then on.</p></div>
+<div class="snip"><div>A repository's .mcp.json, and other clients<button type="button">Copy</button></div><pre>{e(snippet_json)}</pre>
+<p>At the root of a repository, every Claude Code session on it loads the server, on the web too.
+Most other MCP clients take the same block in their own settings.</p></div>
 </div></section>
 
 <section id="domains" class="band"><div class="wrap">

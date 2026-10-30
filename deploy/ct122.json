@@ -1,0 +1,14 @@
+{
+  "_about": "Production config on CT122 (2026-10-30): straight to zpd on loopback, asking as the PUBLIC host name so zpd's own host map is a second barrier (it serves only zarr.icos-cp.eu's stores to that name) under this file's default-deny. No token stores yet: a token store with no tokens is refused at load, and none are issued. forward_client_ip: zpd on loopback believes X-Real-IP, so passports and the proxy's Matomo logging see the end user.",
+  "proxy": "http://127.0.0.1:8081",
+  "proxy_host": "zarr.icos-cp.eu",
+  "public_url": "https://zarr.icos-cp.eu",
+  "forward_client_ip": true,
+  "stores": [
+    {"match": "icos-obspack*", "access": "public"},
+    {"match": "icos-socat*", "access": "public"},
+    {"match": "icos-fluxnet*", "access": "public"},
+    {"match": "socat*", "access": "public"},
+    {"match": "icos-eco-nrt*", "access": "public"}
+  ]
+}

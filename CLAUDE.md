@@ -33,3 +33,26 @@ long versions):
   model today's date, as real clients do.
 * **Never load-test against CT122 from inside it**: a scratch zpd plus
   parallel queries took production down for four minutes on 2026-10-30.
+
+## DEPLOYED: https://mcp.icos-cp.eu (2026-10-30, Alex: "deploy" ... "ok for
+## the caddy entry")
+
+* **CT122**: the code is a COPY at `/root/rc/icos-mcp` (rsync from a
+  checkout, `uv sync --frozen --no-dev`) -- a read-only deploy key for this
+  private repository was refused by the permission classifier as an
+  access grant, so CT122 cannot fetch it yet; adding one is Alex's call.
+  `icos-mcp.service` (deploy/icos-mcp.service) listens on
+  10.10.10.126:8090, MemoryMax=1G beside production's zpd; config
+  `/etc/icos-mcp/config.json` = deploy/ct122.json: zpd on loopback asked
+  as the PUBLIC host name (zpd's own host map as a second barrier), the
+  five public store patterns, no token stores (none issued),
+  forward_client_ip on.
+* **icos4**: caddy block `mcp.icos-cp.eu -> 10.10.10.126:8090` between
+  `# BEGIN icos-mcp` / `# END icos-mcp`, after the zarr-proxy block;
+  backup `Caddyfile.bak-20261030-120830-icos-mcp`.  Let's Encrypt
+  certificate obtained on first request.
+* **Verified**: the landing page and /health over HTTPS; a full MCP session
+  (tools, search ranking NEE_VUT_REF first, aggregate, datasets) in 0.7 s;
+  zpd records a forwarded X-Real-IP as its /24 in the passport.
+* **To update**: rsync a checkout to CT122, `uv sync --frozen --no-dev`,
+  `systemctl restart icos-mcp`.

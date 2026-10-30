@@ -1,0 +1,25 @@
+# The ICOS MCP server on CT122, behind caddy on icos4 (mcp.icos-cp.eu ->
+# 10.10.10.126:8090).  Installed as /etc/systemd/system/icos-mcp.service;
+# the code is /root/rc/icos-mcp with its uv venv (`uv sync --frozen
+# --no-dev`), the config /etc/icos-mcp/config.json (deploy/ct122.json).
+# MemoryMax: CT122 is production's machine -- the zpd beside it must never
+# be the one that runs out (2026-10-30).
+[Unit]
+Description=ICOS MCP server (mcp.icos-cp.eu)
+After=network-online.target zpd.service
+Wants=network-online.target
+
+[Service]
+Environment=ICOS_MCP_CONFIG=/etc/icos-mcp/config.json
+Environment=ICOS_MCP_ALLOWED_HOSTS=mcp.icos-cp.eu
+Environment=ICOS_MCP_PUBLIC_URL=https://mcp.icos-cp.eu
+ExecStart=/root/rc/icos-mcp/.venv/bin/icos-mcp --transport streamable-http --host 10.10.10.126 --port 8090
+Restart=always
+RestartSec=5
+MemoryMax=1G
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

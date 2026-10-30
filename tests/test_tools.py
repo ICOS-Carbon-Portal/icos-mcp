@@ -41,6 +41,7 @@ async def test_tools_listed_and_read_only():
         "describe_variable",
         "find_stations",
         "estimate",
+        "aggregate",
         "get_data",
         "get_citation",
     }
@@ -207,3 +208,36 @@ async def test_search_offers_nrt_when_asked():
         await call("search_variables", {"text": "near-real-time carbon dioxide flux"})
     ).structured_content
     assert r["variables"][0]["store"] == "icos-eco-nrt.zarr"
+
+
+async def test_aggregate_over_the_whole_selection():
+    d = (
+        await call("aggregate", {"id": CO2, "station": ["HTM150"], **JAN})
+    ).structured_content
+    est = (
+        await call("estimate", {"id": CO2, "station": ["HTM150"], **JAN})
+    ).structured_content
+    (g,) = d["groups"]
+    assert d["rows_used"] == est["rows"] and g["n"] <= est["rows"]
+    assert g["min"] <= g["mean"] <= g["max"] and g["std"] > 0
+    assert d["citation"]["citation"] and d["unit"] == "ppm"
+
+
+async def test_aggregate_by_station_and_month():
+    d = (
+        await call(
+            "aggregate",
+            {
+                "id": "icos-obspack.n2o.n2o",
+                "station": ["JFJ13", "IZO29"],
+                "start": "2024-01-01",
+                "end": "2025-01-01",
+                "by": "station_month",
+            },
+        )
+    ).structured_content
+    # a station may miss a month (JFJ13 does in 2024): at most 2 x 12 groups
+    assert 12 < d["n_groups"] <= 24
+    assert {g["station"] for g in d["groups"]} == {"JFJ13", "IZO29"}
+    assert min(g["month"] for g in d["groups"]) == "2024-01"
+    assert all(g["n"] > 0 for g in d["groups"])

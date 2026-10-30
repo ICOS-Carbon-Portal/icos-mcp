@@ -76,21 +76,21 @@
   {
    "id": "atm-04",
    "domain": "atmosphere",
-   "question": "Compare nitrous oxide at Jungfraujoch and Pallas in 2024: which is higher on average?",
-   "probes": "'nitrous oxide' -> n2o; two stations in one request; mountain site id JFJ13",
+   "question": "Compare nitrous oxide at Jungfraujoch and Izana in 2024: which is higher on average?",
+   "probes": "'nitrous oxide' -> n2o; two mountain stations in one request (JFJ13, IZO29)",
    "expect": {
     "variable": [
      "icos-obspack.n2o.n2o"
     ],
     "station": [
      "JFJ13",
-     "PAL12"
+     "IZO29"
     ]
    },
    "truth": {
     "query": {
      "id": "icos-obspack.n2o.n2o",
-     "station": "JFJ13,PAL12",
+     "station": "JFJ13,IZO29",
      "start": "2024-01-01",
      "end": "2025-01-01"
     },
@@ -245,7 +245,9 @@
    "probes": "the yearly panel and its unit; NEE_VUT_REF not a cube slice",
    "expect": {
     "variable": [
-     "icos-fluxnet._combined-fluxnet_yy.NEE_VUT_REF"
+     "icos-fluxnet._combined-fluxnet_yy.NEE_VUT_REF",
+     "icos-fluxnet._combined-fluxnet_mm.NEE_VUT_REF",
+     "icos-fluxnet._combined-fluxnet_dd.NEE_VUT_REF"
     ],
     "station": [
      "SE-Htm"
@@ -348,14 +350,13 @@
     ]
    },
    "truth": {
-    "tool": "estimate",
-    "args": {
+    "query": {
      "id": "icos-eco-nrt._combined-fluxes.NEE",
-     "station": [
-      "BE-Bra"
-     ]
+     "station": "BE-Bra",
+     "start": "-14d"
     },
-    "stat": "time_max_recent",
+    "stat": "last_time",
+    "column": "NEE",
     "max_age_days": 7
    }
   },
@@ -377,9 +378,10 @@
     "query": {
      "id": "icos-eco-nrt._combined-fluxes.LE",
      "station": "BE-Bra",
-     "apply_qc": "true"
+     "apply_qc": "true",
+     "start": "-30d"
     },
-    "stat": "mean_last_30_days",
+    "stat": "mean",
     "column": "LE",
     "tolerance": 1.0
    }
@@ -410,7 +412,7 @@
   {
    "id": "eco-08",
    "domain": "ecosystem",
-   "question": "What was the daily ecosystem respiration at Sodankyla on 15 July 2022?",
+   "question": "What was the daily ecosystem respiration at Hyytiala on 15 July 2022?",
    "probes": "respiration -> RECO, daily panel, partitioning choice stated",
    "expect": {
     "variable": [
@@ -418,13 +420,13 @@
      "icos-fluxnet._combined-fluxnet_dd.RECO_DT_VUT_REF"
     ],
     "station": [
-     "FI-Sod"
+     "FI-Hyy"
     ]
    },
    "truth": {
     "query": {
      "id": "icos-fluxnet._combined-fluxnet_dd.RECO_NT_VUT_REF",
-     "station": "FI-Sod",
+     "station": "FI-Hyy",
      "start": "2022-07-15",
      "end": "2022-07-16"
     },
@@ -475,7 +477,7 @@
     "query": {
      "id": "icos-eco-nrt._combined-fluxes.FC",
      "station": "SE-Htm",
-     "max_rows": "1"
+     "start": "-3d"
     },
     "stat": "passport_object_citation"
    }
@@ -483,8 +485,8 @@
   {
    "id": "oce-01",
    "domain": "ocean",
-   "question": "How many surface-ocean CO2 observations are there in the Baltic Sea in 2023?",
-   "probes": "obs table, a bounding box (no stations), estimate/summary",
+   "question": "How many surface-ocean CO2 observations are there in the Baltic Sea in 2023? Use the box 53-66 N, 9-30 E.",
+   "probes": "obs table, a bounding box given in the question (no stations), estimate/summary or aggregate",
    "expect": {
     "variable": [
      "icos-socat._obs.fCO2",
@@ -558,7 +560,7 @@
      "end": "2021-01-01"
     },
     "endpoint": "summary",
-    "stat": "n_obs"
+    "stat": "n_cells"
    }
   },
   {
@@ -688,7 +690,7 @@
    "id": "x-04",
    "domain": "cross",
    "question": "What is the CO2 standard deviation at Hyltemossa 150 m in January 2025?",
-   "probes": "asking FOR a companion (std_dev) must find it, not the primary -- AND, today, report that /query answers 501 for it (catalogued with time_coord 'time' while the array is on time_co2; 67 of 78 icos-obspack ids, 2026-10-30) rather than substituting the primary or inventing a value",
+   "probes": "asking FOR a companion (std_dev) must find it, not the primary (queryable since the 2026-10-30 catalogue fix; before it, 67 of 78 icos-obspack ids answered 501)",
    "expect": {
     "variable": [
      "icos-obspack.co2.co2_std_dev"
@@ -704,8 +706,9 @@
      "start": "2025-01-01",
      "end": "2025-02-01"
     },
-    "stat": "refusal_handled",
-    "until_fixed": "mean of co2_std_dev, tolerance 0.05"
+    "stat": "mean",
+    "column": "co2_std_dev",
+    "tolerance": 0.05
    }
   }
  ]

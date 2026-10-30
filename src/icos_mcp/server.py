@@ -24,7 +24,7 @@ import math
 import os
 import re
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlencode
 
 import httpx
@@ -60,9 +60,11 @@ How to use these tools:
    find_stations lists the stations carrying a variable, near a place,
    in a box or by name -- use it to turn "Hyltemossa" into HTM150.
 2. estimate before get_data: it says how many rows a selection has.
-3. get_data returns at most a few thousand rows.  For anything larger,
-   give the user its download_url, or summarise from what you fetched
-   and say so.
+3. For a mean, total, range or count, call aggregate -- it computes over
+   the WHOLE selection on the server, by station, day, month or year.
+   Never average rows from get_data yourself: get_data returns at most a
+   few thousand rows, for looking at; for anything larger give the user
+   its download_url.
 4. Always cite: every data answer carries the citation, licence (CC BY
    4.0) and DOI.  Pass them on to the user.
 Station ids are CASE-SENSITIVE: atmosphere stations are a trigram plus
@@ -758,6 +760,153 @@ async def get_citation(
     await _variable(id, _token(ctx))
     _, passport = await _query_rows({"id": id, "max_rows": 1})
     return _citation(passport)
+
+
+# ---------------------------------------------------------------- aggregate
+
+AGG_ROWS_MAX = 500_000  # the proxy's own cap on one answer
+AGG_GROUPS_MAX = 500
+
+
+class Aggregate(BaseModel):
+    id: str
+    variable: str
+    unit: str | None = None
+    by: str
+    groups: list[dict[str, Any]] = Field(
+        description="one entry per group: its keys (station, period), n (finite "
+        "values), and mean, min, max, sum, std over them (null when n is 0)"
+    )
+    n_groups: int
+    rows_used: int
+    note: str | None = None
+    download_url: str
+    citation: Citation
+
+
+_BUCKET = {"year": "datetime64[Y]", "month": "datetime64[M]", "day": "datetime64[D]"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aggregate(
+    id: Annotated[str, Field(description="a variable id from search_variables")],
+    by: Annotated[
+        Literal[
+            "none", "station", "year", "month", "day", "station_year", "station_month"
+        ],
+        Field(description="the groups: none (one result), station, a period, or both"),
+    ] = "none",
+    lat_min: Lat = None,
+    lat_max: Lat = None,
+    lon_min: Lon = None,
+    lon_max: Lon = None,
+    start: StartT = None,
+    end: EndT = None,
+    station: Stations = None,
+    cruise: Cruises = None,
+    height_min: float | None = None,
+    height_max: float | None = None,
+    apply_qc: ApplyQc = False,
+    ctx: Context | None = None,  # injected by the SDK, not a tool argument
+) -> Aggregate:
+    """Statistics over a WHOLE selection, computed on the server: count, mean,
+    min, max, sum and standard deviation of one variable, overall or per
+    station, year, month or day.  Use this for any average, total, range or
+    trend instead of reading rows.  `sum` adds the values as stored: for a
+    rate per day (gC m-2 d-1) summed over daily rows that is a total, for
+    hourly concentrations it is meaningless.  Up to 500,000 rows."""
+    tok = _token(ctx)
+    var = await _variable(id, tok)
+    params = {
+        "id": id,
+        **_filters(
+            lat_min,
+            lat_max,
+            lon_min,
+            lon_max,
+            start,
+            end,
+            station,
+            cruise,
+            height_min,
+            height_max,
+            apply_qc,
+        ),
+    }
+    r = await _get(
+        "/query", {**params, "format": "arrow", "max_rows": AGG_ROWS_MAX + 1}
+    )
+    with ipc.open_stream(io.BytesIO(r.content)) as rd:
+        tab = rd.read_all()
+    if tab.num_rows > AGG_ROWS_MAX:
+        raise ToolError(
+            f"the selection has more than {AGG_ROWS_MAX:,} rows: narrow the time "
+            "window, the box or the stations, or aggregate in parts"
+        )
+    name = var.get("shortname") or id.rsplit(".", 1)[-1]
+    if name not in tab.column_names:
+        raise ToolError(f"{id}: the answer carries no column {name!r}")
+    v = np.asarray(tab.column(name).to_numpy(zero_copy_only=False), dtype=float)
+    keys: list[tuple[str, np.ndarray]] = []
+    if by.startswith("station"):
+        if "station" not in tab.column_names:
+            raise ToolError(f"{id} has no stations; group by a period instead")
+        keys.append(
+            ("station", np.asarray(tab.column("station").to_pylist(), dtype=object))
+        )
+    period = by.split("_")[-1] if by not in ("none", "station") else None
+    if period:
+        tcol = next((c for c in tab.column_names if c.startswith("time")), None)
+        if tcol is None:
+            raise ToolError(f"{id} has no time column to group by {period}")
+        t = tab.column(tcol).to_numpy(zero_copy_only=False).astype("datetime64[ns]")
+        keys.append((period, t.astype(_BUCKET[period]).astype(str)))
+    if keys:
+        combo = np.array(
+            ["\x1f".join(str(k[1][i]) for k in keys) for i in range(len(v))],
+            dtype=object,
+        )
+        labels, inverse = np.unique(combo, return_inverse=True)
+    else:
+        labels, inverse = np.array([""]), np.zeros(len(v), dtype=int)
+    groups = []
+    for gi, lab in enumerate(labels):
+        x = v[inverse == gi]
+        x = x[np.isfinite(x)]
+        g: dict[str, Any] = (
+            dict(zip([k[0] for k in keys], str(lab).split("\x1f"), strict=True))
+            if keys
+            else {}
+        )
+        n = int(x.size)
+        g["n"] = n
+        for stat, fn in (
+            ("mean", np.mean),
+            ("min", np.min),
+            ("max", np.max),
+            ("sum", np.sum),
+            ("std", np.std),
+        ):
+            g[stat] = round(float(fn(x)), 6) if n else None
+        groups.append(g)
+    note = None
+    if len(groups) > AGG_GROUPS_MAX:
+        note = f"{len(groups)} groups; the first {AGG_GROUPS_MAX} are listed"
+    md = tab.schema.metadata or {}
+    passport = json.loads(md[b"data_passport"]) if b"data_passport" in md else {}
+    return Aggregate(
+        id=id,
+        variable=name,
+        unit=var.get("unit"),
+        by=by,
+        groups=groups[:AGG_GROUPS_MAX],
+        n_groups=len(groups),
+        rows_used=tab.num_rows,
+        note=note,
+        download_url=f"{POLICY.url_for(var['zarr_store'])}/query?"
+        f"{urlencode({**params, 'format': 'csv'})}",
+        citation=_citation(passport),
+    )
 
 
 # ---------------------------------------------------------------- stations

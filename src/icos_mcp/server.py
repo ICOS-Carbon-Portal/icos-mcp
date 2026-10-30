@@ -436,6 +436,12 @@ class Citation(BaseModel):
         description="stable id of this exact selection over this exact store version",
     )
     store_version: str | None = None
+    n_sources: int | None = Field(
+        default=None,
+        description="how many data objects the selection came from; in a data "
+        "answer their citations are listed only when there are three or fewer -- "
+        "get_citation (with the same stations) lists them all",
+    )
     sources: list[str] | None = Field(
         default=None,
         description="the citation of each data object the selection came from -- "
@@ -453,10 +459,21 @@ class Data(BaseModel):
     )
     truncated: bool
     download_url: str = Field(
-        description="the WHOLE selection as CSV (the proxy caps one "
-        "answer at 500,000 rows); change format=csv to arrow or "
-        "parquet for the binary twins"
+        description="the selection as CSV when it fits one download; when it does "
+        "not, the FIRST of download_urls"
     )
+    download_urls: list[str] | None = Field(
+        default=None,
+        description="when the selection is larger than one download (the proxy "
+        "caps an answer at 500,000 rows): one CSV link per time window, together "
+        "the WHOLE selection -- give the user all of them",
+    )
+    download_complete: bool = Field(
+        default=True,
+        description="false when no set of links could be planned to cover the "
+        "whole selection; the note says what is missing",
+    )
+    note: str | None = None
     citation: Citation
 
 
@@ -652,16 +669,22 @@ def _citation(passport: dict, short: bool = False) -> Citation:
         ),
         {},
     )
+    # every data object the selection came from: its citation, or -- an
+    # obspack source carries none -- its identifier
     objs = [
-        n.get("citation")
+        n.get("citation") or n.get("@id")
         for n in passport.get("@graph", [])
         if isinstance(n.get("@type"), list)
         and "icos:DataObject" in n["@type"]
-        and n.get("citation")
+        and (n.get("citation") or n.get("@id"))
     ]
+    n = len(objs) or None
     if short:
-        objs = [_short(o) for o in objs]
+        # a 137-station selection cites 164 objects in 40 KB: in a data
+        # answer, the count and a pointer (an external test, 2026-10-30)
+        objs = [_short(o) for o in objs] if len(objs) <= 3 else []
     return Citation(
+        n_sources=n,
         sources=objs or None,
         citation=_short(node.get("citation")) if short else node.get("citation"),
         license=node.get("license"),
@@ -688,6 +711,84 @@ async def _cite(
         _, passport = await _query_rows({**base, "start": recent, "max_rows": 100_000})
         c = _citation(passport, short)
     return c
+
+
+DL_WINDOWS_MAX = 64
+
+
+def _link(store: str, params: dict) -> str:
+    return f"{POLICY.url_for(store)}/query?{urlencode({**params, 'format': 'csv'})}"
+
+
+async def _download_links(
+    store: str, var_id: str, params: dict, rows: int | None
+) -> tuple[list[str], bool, str | None]:
+    """CSV links that together hold the WHOLE selection.  The proxy cuts one
+    answer at 500,000 rows (and says so in X-Data-Truncated), so a larger
+    selection is split by time: each window is halved until /summary's
+    count for it -- an UPPER bound, it ignores the station and QC filters --
+    fits, so every link is whole.  (An external test, 2026-10-30: the
+    full-year link stopped at 500,000 rows with no warning, and the mean
+    recomputed from it was 427.58 where the selection's is 426.44.)"""
+    if rows is not None and rows <= AGG_ROWS_MAX:
+        return [_link(store, params)], True, None
+    lo, hi = await _window(var_id, params)
+    if lo is None or hi is None:
+        return (
+            [_link(store, params)],
+            False,
+            (
+                f"the selection is larger than one download ({AGG_ROWS_MAX:,} rows) and "
+                "could not be split by time here: the link holds its first "
+                f"{AGG_ROWS_MAX:,} rows only"
+            ),
+        )
+    todo, out = [(lo, hi)], []
+    while todo:
+        a, b = todo.pop(0)
+        try:
+            s = (
+                await _get(
+                    "/summary",
+                    {
+                        "id": var_id,
+                        **{
+                            k: v
+                            for k, v in params.items()
+                            if k not in _NOT_SUMMARISED and k not in ("start", "end")
+                        },
+                        "start": str(a),
+                        "end": str(b),
+                    },
+                )
+            ).json()
+            n = s.get("n_obs", s.get("n_cells"))
+        except ToolError:
+            n = None
+        if (n is not None and n <= AGG_ROWS_MAX) or b - a < np.timedelta64(2, "h"):
+            out.append((a, b))
+        elif len(out) + len(todo) + 2 > DL_WINDOWS_MAX:
+            return (
+                [_link(store, params)],
+                False,
+                (
+                    f"the selection needs more than {DL_WINDOWS_MAX} downloads of "
+                    f"{AGG_ROWS_MAX:,} rows: narrow it"
+                ),
+            )
+        else:
+            mid = a + (b - a) // 2
+            todo[:0] = [(a, mid), (mid, b)]
+    out.sort()
+    links = [_link(store, {**params, "start": str(a), "end": str(b)}) for a, b in out]
+    return (
+        links,
+        True,
+        (
+            f"the selection is larger than one download ({AGG_ROWS_MAX:,} rows): "
+            f"{len(links)} links, one per time window, together hold all of it"
+        ),
+    )
 
 
 async def _query_rows(params: dict) -> tuple[list[dict], dict]:
@@ -1089,8 +1190,11 @@ async def get_data(
             if k not in cols:
                 cols.append(k)
     cite = _citation(passport, short=True)
-    if not cite.citation and not cite.sources:
+    if not cite.citation and not cite.sources and not cite.n_sources:
         cite = await _cite(id, _ids(station) if station else None, short=True)
+    links, complete, note = await _download_links(
+        var["zarr_store"], id, params, total if truncated else len(rows)
+    )
     return Data(
         id=id,
         columns=cols,
@@ -1098,8 +1202,10 @@ async def get_data(
         rows_returned=len(rows),
         rows_total=total,
         truncated=truncated,
-        download_url=f"{POLICY.url_for(var['zarr_store'])}/query?"
-        f"{urlencode({**params, 'format': 'csv'})}",
+        download_url=links[0],
+        download_urls=links if len(links) > 1 else None,
+        download_complete=complete,
+        note=note,
         citation=cite,
     )
 
@@ -1107,19 +1213,42 @@ async def get_data(
 @mcp.tool(annotations=READ_ONLY)
 async def get_citation(
     id: Annotated[str, Field(description="a variable id from search_variables")],
-    station: Annotated[
-        str | None,
-        Field(
-            description="a station id: near-real-time data cite the object of each "
-            "station, so name the station whose data you cite"
-        ),
-    ] = None,
+    station: Stations = None,
+    start: StartT = None,
+    end: EndT = None,
+    lat_min: Lat = None,
+    lat_max: Lat = None,
+    lon_min: Lon = None,
+    lon_max: Lon = None,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Citation:
     """How to cite a variable's data: the citation text, licence and DOI from
-    its data passport."""
-    await _variable(id, _token(ctx))
-    return await _cite(id, _ids(station) if station else None)
+    its data passport, and -- for a selection (stations, a time window, a
+    box) -- every data object it came from, in full.  Data answers carry a
+    short citation and only the COUNT of their sources; this lists them."""
+    var = await _variable(id, _token(ctx))
+    if not any((station, start, end, lat_min, lat_max, lon_min, lon_max)):
+        return await _cite(id, None)
+    params = {
+        "id": id,
+        **_filters(
+            lat_min,
+            lat_max,
+            lon_min,
+            lon_max,
+            start,
+            end,
+            station,
+            None,
+            None,
+            None,
+            False,
+        ),
+    }
+    state = {"rows": 0, "parts": 0, "passport": {}, "windows": []}
+    name = var.get("shortname") or id.rsplit(".", 1)[-1]
+    await _aggregate_parts(id, name, "none", params, {}, [], state, depth=0)
+    return _citation(_with_objects(state))
 
 
 # ---------------------------------------------------------------- aggregate
@@ -1141,6 +1270,8 @@ class Aggregate(BaseModel):
     rows_used: int
     note: str | None = None
     download_url: str
+    download_urls: list[str] | None = None
+    download_complete: bool = True
     citation: Citation
 
 
@@ -1200,7 +1331,7 @@ async def aggregate(
     name = var.get("shortname") or id.rsplit(".", 1)[-1]
     acc: dict[tuple, list[float]] = {}  # group -> [n, sum, sumsq, min, max]
     key_names: list[str] = []
-    state = {"rows": 0, "parts": 0, "passport": {}}
+    state = {"rows": 0, "parts": 0, "passport": {}, "windows": []}
     await _aggregate_parts(id, name, by, params, acc, key_names, state, depth=0)
     groups = []
     for lab in sorted(acc):
@@ -1228,6 +1359,19 @@ async def aggregate(
     if len(groups) > AGG_GROUPS_MAX:
         notes.append(f"{len(groups)} groups; the first {AGG_GROUPS_MAX} are listed")
     notes.append("quality control " + ("applied" if apply_qc else "NOT applied"))
+    # the windows it counted whole are the links: together the selection
+    store = var["zarr_store"]
+    if state["parts"] > 1:
+        links = [
+            _link(store, {**params, "start": a, "end": b})
+            for a, b in sorted(state["windows"], key=lambda w: str(w[0]))
+        ]
+        notes.append(
+            f"the selection is larger than one download: {len(links)} links, "
+            "one per time window, together hold all of it"
+        )
+    else:
+        links = [_link(store, params)]
     return Aggregate(
         id=id,
         variable=name,
@@ -1237,10 +1381,22 @@ async def aggregate(
         n_groups=len(groups),
         rows_used=state["rows"],
         note="; ".join(notes),
-        download_url=f"{POLICY.url_for(var['zarr_store'])}/query?"
-        f"{urlencode({**params, 'format': 'csv'})}",
-        citation=_citation(state["passport"], short=True),
+        download_url=links[0],
+        download_urls=links if len(links) > 1 else None,
+        citation=_citation(_with_objects(state), short=True),
     )
+
+
+def _with_objects(state: dict) -> dict:
+    """The first window's passport with the data objects of EVERY window:
+    a split selection's sources are the union of its parts'."""
+    pp = state["passport"] or {}
+    graph = [
+        nd
+        for nd in pp.get("@graph", [])
+        if not (isinstance(nd.get("@type"), list) and "icos:DataObject" in nd["@type"])
+    ]
+    return {**pp, "@graph": graph + list(state.get("objects", {}).values())}
 
 
 AGG_PARTS_MAX = 64  # windows one aggregate may split into: 32 M rows at most
@@ -1303,11 +1459,14 @@ async def _aggregate_parts(
         return
     state["parts"] += 1
     state["rows"] += tab.num_rows
+    state["windows"].append((params.get("start"), params.get("end")))
+    md = tab.schema.metadata or {}
+    pp = json.loads(md[b"data_passport"]) if b"data_passport" in md else {}
+    for nd in pp.get("@graph", []):
+        if isinstance(nd.get("@type"), list) and "icos:DataObject" in nd["@type"]:
+            state.setdefault("objects", {})[nd.get("@id")] = nd
     if not state["passport"]:
-        md = tab.schema.metadata or {}
-        state["passport"] = (
-            json.loads(md[b"data_passport"]) if b"data_passport" in md else {}
-        )
+        state["passport"] = pp
     if tab.num_rows == 0:
         return
     if name not in tab.column_names:

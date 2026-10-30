@@ -358,3 +358,36 @@ async def test_aggregate_splits_a_selection_over_the_cap_and_stays_exact():
     assert a["groups"][0]["n"] == n
     assert abs(a["groups"][0]["mean"] - mean) < 1e-6
     assert a["groups"][0]["max"] == max(h["groups"][0]["max"] for h in halves)
+
+
+async def test_many_sources_are_a_count_and_a_pointer():
+    five = ["HTM150", "NOR100", "SVB150", "GAT341", "KIT200"]
+    a = (
+        await call("aggregate", {"id": CO2, "station": five, **JAN})
+    ).structured_content
+    c = a["citation"]
+    assert c["n_sources"] and c["n_sources"] > 3 and c["sources"] is None
+    full = (
+        await call("get_citation", {"id": CO2, "station": ",".join(five), **JAN})
+    ).structured_content
+    assert full["sources"] and len(full["sources"]) == full["n_sources"]
+
+
+@pytest.mark.skipif(
+    os.environ.get("ICOS_LIVE") != "1", reason="live only (ICOS_LIVE=1)"
+)
+async def test_the_download_links_hold_the_whole_selection():
+    import httpx
+
+    q = {"id": CO2, **Y2023}
+    a = (await call("aggregate", {**q, "by": "station"})).structured_content
+    links = a["download_urls"] or [a["download_url"]]
+    n = []
+    async with httpx.AsyncClient(timeout=600) as h:
+        for u in links:
+            lines = 0
+            async with h.stream("GET", u) as r:
+                async for chunk in r.aiter_bytes():
+                    lines += chunk.count(b"\n")
+            n.append(lines - 1)
+    assert len(links) > 1 and max(n) < 500_000 and sum(n) == a["rows_used"]

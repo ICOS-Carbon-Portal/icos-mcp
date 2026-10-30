@@ -1,0 +1,28 @@
+[project]
+name = "icos-mcp"
+version = "0.1.0"
+description = "ICOS carbon and greenhouse-gas observations for AI assistants, over MCP"
+readme = "README.md"
+authors = [
+    { name = "Alex Vermeulen", email = "alex.vermeulen@icos-ri.eu" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp>=2.3.0",
+    "pyarrow>=26.0.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.20,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "anyio>=4.15.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
+
+[project.scripts]
+icos-mcp = "icos_mcp.server:main"

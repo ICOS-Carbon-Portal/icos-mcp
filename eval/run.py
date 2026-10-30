@@ -6,9 +6,13 @@ For each question:
   the set does not go stale as the data grow -- station sets and
   citations come from the server's own readers, everything numeric
   straight from the proxy;
-* an AGENT run: a headless Claude Code session (`claude -p`) with ONLY
-  this MCP server's tools, in an empty directory so no project
-  instructions leak in; every tool call it makes is recorded;
+* an AGENT run, every tool call recorded.  The default agent is OUR OWN
+  model -- Qwen (qwen3-8-27b) served by SGLang on the Nvidia Spark
+  (icoscp-spark1:30000, OpenAI-compatible; Alex, 2026-10-30) -- driven by
+  the loop below over the MCP server's own tool list, schemas and
+  instructions, exactly what an MCP client hands a model.  `--agent
+  claude` runs a headless Claude Code session instead, with ONLY this
+  server's tools, in an empty directory so no project instructions leak;
 * a GRADE in two parts -- ROUTE (did it use an acceptable variable,
   station and QC choice?) and ANSWER (is the truth in its final text,
   within the question's tolerance?).  Questions whose truth is a
@@ -16,8 +20,11 @@ For each question:
   a human to read.
 
     uv run python eval/run.py --truth-only            # the truths, no agent
-    uv run python eval/run.py --only atm-01,eco-01    # a few, with the agent
+    uv run python eval/run.py --only atm-01,eco-01    # a few, with Qwen
     uv run python eval/run.py                         # all of them
+    uv run python eval/run.py --agent claude          # Claude Code instead
+
+QWEN_BASE_URL and QWEN_MODEL override the endpoint and the model.
 
 Results go to eval/results/<UTC stamp>.jsonl, one line per question.
 """
@@ -159,10 +166,111 @@ def truth(q: dict):
     return None, f"no truth rule for {stat}"
 
 
-# ---------------------------------------------------------------- the agent
+# ---------------------------------------------------------------- the agents
 
 
-def agent(question: str, model: str | None) -> dict:
+QWEN_URL = os.environ.get("QWEN_BASE_URL", "http://icoscp-spark1:30000").rstrip("/")
+QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3-8-27b")
+TOOL_RESULT_MAX = 12_000  # characters of one tool result handed back to the model
+TURNS_MAX = 14
+
+
+async def _qwen(question: str, model: str, think: bool) -> dict:
+    """An OpenAI-style tool loop over the MCP server: the model sees the
+    server's instructions as the system prompt and its tools as functions;
+    each tool call goes through MCP and its result comes back as a tool
+    message.  Ends at the first answer without a tool call."""
+    calls, answer, usage = [], "", {"prompt": 0, "completion": 0}
+    t0 = time.time()
+    async with Client(server.mcp) as c, httpx.AsyncClient(timeout=600) as http:
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description or "",
+                    "parameters": t.input_schema,
+                },
+            }
+            for t in (await c.list_tools()).tools
+        ]
+        messages = [
+            {"role": "system", "content": c.instructions or ""},
+            {"role": "user", "content": question},
+        ]
+        for _ in range(TURNS_MAX):
+            r = await http.post(
+                f"{QWEN_URL}/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "tools": tools,
+                    "tool_choice": "auto",
+                    "temperature": 0.2,
+                    "max_tokens": 4096,
+                    "chat_template_kwargs": {"enable_thinking": think},
+                },
+            )
+            r.raise_for_status()
+            d = r.json()
+            u = d.get("usage") or {}
+            usage["prompt"] += u.get("prompt_tokens", 0)
+            usage["completion"] += u.get("completion_tokens", 0)
+            msg = d["choices"][0]["message"]
+            tcs = msg.get("tool_calls") or []
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": msg.get("content") or "",
+                    **({"tool_calls": tcs} if tcs else {}),
+                }
+            )
+            if not tcs:
+                answer = msg.get("content") or ""
+                break
+            for tc in tcs:
+                name = tc["function"]["name"]
+                try:
+                    args = json.loads(tc["function"].get("arguments") or "{}")
+                except ValueError:
+                    args = {}
+                calls.append({"tool": name, "input": args})
+                res = await c.call_tool(name, args)
+                text = (
+                    json.dumps(res.structured_content, ensure_ascii=False)
+                    if res.structured_content is not None
+                    else " ".join(getattr(x, "text", "") for x in res.content)
+                )
+                if res.is_error:
+                    text = "ERROR: " + text
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", name),
+                        "content": text[:TOOL_RESULT_MAX],
+                    }
+                )
+        else:
+            answer = "(no answer within the turn limit)"
+    return {
+        "calls": calls,
+        "answer": answer,
+        "seconds": round(time.time() - t0, 1),
+        "tokens": usage,
+        "cost_usd": None,
+        "stderr": "",
+    }
+
+
+def agent(
+    question: str, model: str | None, kind: str = "qwen", think: bool = False
+) -> dict:
+    if kind == "qwen":
+        return asyncio.run(_qwen(question, model or QWEN_MODEL, think))
+    return _claude(question, model)
+
+
+def _claude(question: str, model: str | None) -> dict:
     cfg = {
         "mcpServers": {
             "icos": {
@@ -332,6 +440,10 @@ def main():
     ap.add_argument("--only", default="")
     ap.add_argument("--truth-only", action="store_true")
     ap.add_argument("--model", default=None)
+    ap.add_argument("--agent", choices=("qwen", "claude"), default="qwen")
+    ap.add_argument(
+        "--think", action="store_true", help="Qwen: reasoning on (off by default)"
+    )
     a = ap.parse_args()
     with open(os.path.join(HERE, "questions.json"), encoding="utf-8") as f:
         qs = json.load(f)["questions"]
@@ -347,7 +459,7 @@ def main():
         row = {"id": q["id"], "truth": want, "truth_error": err}
         line = f"{q['id']:7s} truth={str(want)[:60]!s:62s}"
         if not a.truth_only:
-            r = agent(q["question"], a.model)
+            r = agent(q["question"], a.model, a.agent, a.think)
             ro, rn = grade_route(q, r["calls"])
             ao, an = grade_answer(q, want, r["answer"])
             row.update(r, route_ok=ro, route_note=rn, answer_ok=ao, answer_note=an)

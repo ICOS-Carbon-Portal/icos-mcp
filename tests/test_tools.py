@@ -1,9 +1,8 @@
-"""Live smoke tests: every tool against the proxy at ICOS_PROXY.
-
-These read production data, so they assert SHAPES and invariants -- the
-citation present, truncation never silent, the download URL naming the
-same selection -- rather than values.  The recorded contract tests of
-phase 2 will pin values against a frozen corpus.
+"""Contract tests: every tool, resource and prompt, over recorded proxy
+answers (conftest.py).  They assert the invariants a client relies on --
+the citation present, truncation never silent, the download URL naming
+the same selection, station ids that get_data accepts -- and, because
+the answers are recorded, they also pin the values.
 """
 
 import json
@@ -40,6 +39,7 @@ async def test_tools_listed_and_read_only():
         "list_datasets",
         "search_variables",
         "describe_variable",
+        "find_stations",
         "estimate",
         "get_data",
         "get_citation",
@@ -63,6 +63,7 @@ async def test_datasets_cover_three_domains():
         ("carbon dioxide", "icos-obspack.co2.co2"),
         ("nitrous oxide", "icos-obspack.n2o.n2o"),
         ("ocean co2", "icos-socat._obs.fCO2"),
+        ("air temperature", "icos-obspack.mto.at"),
     ],
 )
 async def test_search_finds_the_primary_measurement_first(text, first):
@@ -128,3 +129,81 @@ async def test_citation_matches_the_data_answer():
     ).structured_content
     assert c["citation"] == d["citation"]["citation"]
     assert json.dumps(c["license"]) == json.dumps(d["citation"]["license"])
+
+
+async def test_find_stations_by_name_gives_ids_get_data_accepts():
+    r = (
+        await call("find_stations", {"id": CO2, "text": "Hyltemossa"})
+    ).structured_content
+    ids = [s["id"] for s in r["stations"]]
+    assert ids == ["HTM150", "HTM30", "HTM70"]
+    assert all(
+        s["name"] == "Hyltemossa" and s["sampling_height"] for s in r["stations"]
+    )
+    d = (
+        await call("get_data", {"id": CO2, "station": ["HTM150"], **JAN, "max_rows": 1})
+    ).structured_content
+    assert d["rows"][0][d["columns"].index("station")] == "HTM150"
+
+
+async def test_find_stations_near_a_point_is_sorted_by_distance():
+    r = (
+        await call(
+            "find_stations",
+            {
+                "id": "icos-obspack.ch4.ch4",
+                "near_lat": 53.55,
+                "near_lon": 9.99,
+                "radius_km": 250,
+            },
+        )
+    ).structured_content
+    d = [s["distance_km"] for s in r["stations"]]
+    assert d == sorted(d) and all(x <= 250 for x in d) and r["n_matches"] == len(d)
+
+
+@pytest.mark.parametrize(
+    "args, want",
+    [
+        ({"id": "icos-fluxnet._combined-fluxnet_dd.NEE", "country": "FI"}, "FI-Hyy"),
+        (
+            {
+                "id": "icos-eco-nrt._combined-meteo.TA",
+                "lat_min": 60,
+                "lat_max": 71,
+                "lon_min": 0,
+                "lon_max": 35,
+            },
+            "FI-Sod",
+        ),
+    ],
+)
+async def test_find_stations_ecosystem_stores(args, want):
+    r = (await call("find_stations", args)).structured_content
+    assert want in [s["id"] for s in r["stations"]]
+
+
+async def test_find_stations_refuses_an_obs_table_by_name():
+    r = await call("find_stations", {"id": "icos-socat._obs.fCO2"})
+    assert r.is_error and "bounding box" in r.content[0].text
+
+
+async def test_resources_and_prompts():
+    async with Client(mcp) as c:
+        uris = {x.uri for x in (await c.list_resources()).resources}
+        assert {"icos://catalogue", "icos://llms.txt", "icos://data-passport"} <= uris
+        g = await c.read_resource("icos://stores/icos-obspack/agent-guide")
+        assert json.loads(g.contents[0].text)["domain"] == "atmosphere"
+        names = {p.name for p in (await c.list_prompts()).prompts}
+        assert names == {"station_record", "compare_stations", "ocean_region"}
+        p = await c.get_prompt(
+            "station_record", {"quantity": "methane", "station": "Norunda"}
+        )
+        assert "find_stations" in p.messages[0].content.text
+
+
+async def test_search_offers_nrt_when_asked():
+    r = (
+        await call("search_variables", {"text": "near-real-time carbon dioxide flux"})
+    ).structured_content
+    assert r["variables"][0]["store"] == "icos-eco-nrt.zarr"

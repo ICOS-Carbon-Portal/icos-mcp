@@ -1,0 +1,712 @@
+{
+ "_about": "DRAFT evaluation set for the ICOS MCP server (docs/icos-mcp-plan.md, Quality 3). Written 2026-10-30 from the catalogue and the station lists as served; TO BE REVIEWED by one person per domain (atmosphere, ocean, ecosystem) before it is relied on. Each question names what a CORRECT answer must use (expect: an acceptable variable id, station, QC choice) and a TRUTH a grader computes from the proxy itself at run time (truth.query is a /query or /summary request, truth.stat what to compute from it), so the set does not go stale as the data grow. 'probes' says which trap the question exists to catch.",
+ "questions": [
+  {
+   "id": "atm-01",
+   "domain": "atmosphere",
+   "question": "What was the mean CO2 mole fraction at Hyltemossa (150 m) in January 2025?",
+   "probes": "name -> station id (find_stations), the default intake height",
+   "expect": {
+    "variable": [
+     "icos-obspack.co2.co2"
+    ],
+    "station": [
+     "HTM150"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-obspack.co2.co2",
+     "station": "HTM150",
+     "start": "2025-01-01",
+     "end": "2025-02-01"
+    },
+    "stat": "mean",
+    "column": "co2",
+    "tolerance": 0.05
+   }
+  },
+  {
+   "id": "atm-02",
+   "domain": "atmosphere",
+   "question": "How much methane was measured at Norunda in 2024? Give the annual mean at the highest inlet.",
+   "probes": "'methane' -> ch4 (synonym), highest of several intake heights (NOR100)",
+   "expect": {
+    "variable": [
+     "icos-obspack.ch4.ch4"
+    ],
+    "station": [
+     "NOR100"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-obspack.ch4.ch4",
+     "station": "NOR100",
+     "start": "2024-01-01",
+     "end": "2025-01-01"
+    },
+    "stat": "mean",
+    "column": "ch4",
+    "tolerance": 0.5
+   }
+  },
+  {
+   "id": "atm-03",
+   "domain": "atmosphere",
+   "question": "Which ICOS atmosphere stations within 250 km of Hamburg measure CH4?",
+   "probes": "find_stations near a point; distinct stations vs intake heights",
+   "expect": {
+    "variable": [
+     "icos-obspack.ch4.ch4"
+    ],
+    "station": null
+   },
+   "truth": {
+    "tool": "find_stations",
+    "args": {
+     "id": "icos-obspack.ch4.ch4",
+     "near_lat": 53.55,
+     "near_lon": 9.99,
+     "radius_km": 250
+    },
+    "stat": "station_set"
+   }
+  },
+  {
+   "id": "atm-04",
+   "domain": "atmosphere",
+   "question": "Compare nitrous oxide at Jungfraujoch and Pallas in 2024: which is higher on average?",
+   "probes": "'nitrous oxide' -> n2o; two stations in one request; mountain site id JFJ13",
+   "expect": {
+    "variable": [
+     "icos-obspack.n2o.n2o"
+    ],
+    "station": [
+     "JFJ13",
+     "PAL12"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-obspack.n2o.n2o",
+     "station": "JFJ13,PAL12",
+     "start": "2024-01-01",
+     "end": "2025-01-01"
+    },
+    "stat": "mean_by_station",
+    "column": "n2o",
+    "tolerance": 0.2
+   }
+  },
+  {
+   "id": "atm-05",
+   "domain": "atmosphere",
+   "question": "Using only quality-controlled data, what is the hourly CO2 range at Karlsruhe 200 m in July 2024?",
+   "probes": "apply_qc on a string flag (O/U kept, N/K dropped)",
+   "expect": {
+    "variable": [
+     "icos-obspack.co2.co2"
+    ],
+    "station": [
+     "KIT200"
+    ],
+    "apply_qc": true
+   },
+   "truth": {
+    "query": {
+     "id": "icos-obspack.co2.co2",
+     "station": "KIT200",
+     "start": "2024-07-01",
+     "end": "2024-08-01",
+     "apply_qc": "true"
+    },
+    "stat": "min_max",
+    "column": "co2",
+    "tolerance": 0.01
+   }
+  },
+  {
+   "id": "atm-06",
+   "domain": "atmosphere",
+   "question": "Is there radon data at Cabauw, and from which inlet?",
+   "probes": "radon -> rn; coverage, not a value",
+   "expect": {
+    "variable": [
+     "icos-obspack.rn.rn"
+    ],
+    "station": [
+     "CBW207",
+     "CBW27"
+    ]
+   },
+   "truth": {
+    "tool": "find_stations",
+    "args": {
+     "id": "icos-obspack.rn.rn",
+     "text": "Cabauw"
+    },
+    "stat": "station_set"
+   }
+  },
+  {
+   "id": "atm-07",
+   "domain": "atmosphere",
+   "question": "What was the air temperature at the Hyltemossa tower top on 1 July 2025 at noon UTC?",
+   "probes": "meteorology in the obspack store (mto.at), a single timestamp",
+   "expect": {
+    "variable": [
+     "icos-obspack.mto.at"
+    ],
+    "station": [
+     "HTM150"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-obspack.mto.at",
+     "station": "HTM150",
+     "start": "2025-07-01T12:00:00",
+     "end": "2025-07-01T13:00:00"
+    },
+    "stat": "first",
+    "column": "at",
+    "tolerance": 0.05
+   }
+  },
+  {
+   "id": "atm-08",
+   "domain": "atmosphere",
+   "question": "How many ICOS atmosphere station records (station and height) report CO in 2025?",
+   "probes": "'CO' not CO2; summary not data",
+   "expect": {
+    "variable": [
+     "icos-obspack.co.co"
+    ],
+    "station": null
+   },
+   "truth": {
+    "query": {
+     "id": "icos-obspack.co.co",
+     "start": "2025-01-01",
+     "end": "2026-01-01"
+    },
+    "endpoint": "summary",
+    "stat": "n_stations"
+   }
+  },
+  {
+   "id": "atm-09",
+   "domain": "atmosphere",
+   "question": "Give me the CO2 data for Svartberget 150 m for the whole of 2023 as a file I can load in pandas.",
+   "probes": "a selection too large for get_data: the answer must give download_url, not paste rows",
+   "expect": {
+    "variable": [
+     "icos-obspack.co2.co2"
+    ],
+    "station": [
+     "SVB150"
+    ],
+    "download_url": true
+   },
+   "truth": {
+    "query": {
+     "id": "icos-obspack.co2.co2",
+     "station": "SVB150",
+     "start": "2023-01-01",
+     "end": "2024-01-01"
+    },
+    "stat": "count"
+   }
+  },
+  {
+   "id": "atm-10",
+   "domain": "atmosphere",
+   "question": "How should I cite ICOS atmospheric CO2 data?",
+   "probes": "get_citation; the collection DOI",
+   "expect": {
+    "variable": [
+     "icos-obspack.co2.co2"
+    ],
+    "station": null
+   },
+   "truth": {
+    "tool": "get_citation",
+    "args": {
+     "id": "icos-obspack.co2.co2"
+    },
+    "stat": "doi"
+   }
+  },
+  {
+   "id": "eco-01",
+   "domain": "ecosystem",
+   "question": "What was the annual net ecosystem exchange at Hyltemossa (SE-Htm) in 2023, in gC m-2 y-1?",
+   "probes": "the yearly panel and its unit; NEE_VUT_REF not a cube slice",
+   "expect": {
+    "variable": [
+     "icos-fluxnet._combined-fluxnet_yy.NEE_VUT_REF"
+    ],
+    "station": [
+     "SE-Htm"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-fluxnet._combined-fluxnet_yy.NEE_VUT_REF",
+     "station": "SE-Htm",
+     "start": "2023-01-01",
+     "end": "2024-01-01"
+    },
+    "stat": "first",
+    "column": "NEE_VUT_REF",
+    "tolerance": 0.5
+   }
+  },
+  {
+   "id": "eco-02",
+   "domain": "ecosystem",
+   "question": "Which month of 2022 had the highest gross primary production at Hyytiala?",
+   "probes": "'gross primary production' -> GPP, monthly panel, FI-Hyy",
+   "expect": {
+    "variable": [
+     "icos-fluxnet._combined-fluxnet_mm.GPP_NT_VUT_REF",
+     "icos-fluxnet._combined-fluxnet_mm.GPP_DT_VUT_REF"
+    ],
+    "station": [
+     "FI-Hyy"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-fluxnet._combined-fluxnet_mm.GPP_NT_VUT_REF",
+     "station": "FI-Hyy",
+     "start": "2022-01-01",
+     "end": "2023-01-01"
+    },
+    "stat": "argmax_time",
+    "column": "GPP_NT_VUT_REF"
+   }
+  },
+  {
+   "id": "eco-03",
+   "domain": "ecosystem",
+   "question": "List the ICOS ecosystem flux sites in Finland.",
+   "probes": "find_stations by country on a fluxnet panel",
+   "expect": {
+    "variable": [
+     "icos-fluxnet._combined-fluxnet_dd.NEE_VUT_REF"
+    ],
+    "station": null
+   },
+   "truth": {
+    "tool": "find_stations",
+    "args": {
+     "id": "icos-fluxnet._combined-fluxnet_dd.NEE_VUT_REF",
+     "country": "FI"
+    },
+    "stat": "station_set"
+   }
+  },
+  {
+   "id": "eco-04",
+   "domain": "ecosystem",
+   "question": "What was the total precipitation at Hainich in 2021?",
+   "probes": "precipitation -> P_F; a sum over daily values, mm",
+   "expect": {
+    "variable": [
+     "icos-fluxnet._combined-fluxnet_dd.P_F",
+     "icos-fluxnet._combined-fluxnet_yy.P_F"
+    ],
+    "station": [
+     "DE-Hai"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-fluxnet._combined-fluxnet_dd.P_F",
+     "station": "DE-Hai",
+     "start": "2021-01-01",
+     "end": "2022-01-01"
+    },
+    "stat": "sum",
+    "column": "P_F",
+    "tolerance": 1.0
+   }
+  },
+  {
+   "id": "eco-05",
+   "domain": "ecosystem",
+   "question": "What is the latest net ecosystem exchange measured at Brasschaat this week?",
+   "probes": "'latest' -> the near-real-time store, not the release",
+   "expect": {
+    "variable": [
+     "icos-eco-nrt._combined-fluxes.NEE"
+    ],
+    "station": [
+     "BE-Bra"
+    ]
+   },
+   "truth": {
+    "tool": "estimate",
+    "args": {
+     "id": "icos-eco-nrt._combined-fluxes.NEE",
+     "station": [
+      "BE-Bra"
+     ]
+    },
+    "stat": "time_max_recent",
+    "max_age_days": 7
+   }
+  },
+  {
+   "id": "eco-06",
+   "domain": "ecosystem",
+   "question": "Using only good-quality half-hours, what was the mean latent heat flux at Brasschaat in the last month of NRT data?",
+   "probes": "apply_qc on the Foken SSITC flag (keep <= 1)",
+   "expect": {
+    "variable": [
+     "icos-eco-nrt._combined-fluxes.LE"
+    ],
+    "station": [
+     "BE-Bra"
+    ],
+    "apply_qc": true
+   },
+   "truth": {
+    "query": {
+     "id": "icos-eco-nrt._combined-fluxes.LE",
+     "station": "BE-Bra",
+     "apply_qc": "true"
+    },
+    "stat": "mean_last_30_days",
+    "column": "LE",
+    "tolerance": 1.0
+   }
+  },
+  {
+   "id": "eco-07",
+   "domain": "ecosystem",
+   "question": "Which ecosystem stations north of 60 degrees have near-real-time air temperature?",
+   "probes": "find_stations by box on the eco-nrt meteo panel",
+   "expect": {
+    "variable": [
+     "icos-eco-nrt._combined-meteo.TA"
+    ],
+    "station": null
+   },
+   "truth": {
+    "tool": "find_stations",
+    "args": {
+     "id": "icos-eco-nrt._combined-meteo.TA",
+     "lat_min": 60,
+     "lat_max": 90,
+     "lon_min": -180,
+     "lon_max": 180
+    },
+    "stat": "station_set"
+   }
+  },
+  {
+   "id": "eco-08",
+   "domain": "ecosystem",
+   "question": "What was the daily ecosystem respiration at Sodankyla on 15 July 2022?",
+   "probes": "respiration -> RECO, daily panel, partitioning choice stated",
+   "expect": {
+    "variable": [
+     "icos-fluxnet._combined-fluxnet_dd.RECO_NT_VUT_REF",
+     "icos-fluxnet._combined-fluxnet_dd.RECO_DT_VUT_REF"
+    ],
+    "station": [
+     "FI-Sod"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-fluxnet._combined-fluxnet_dd.RECO_NT_VUT_REF",
+     "station": "FI-Sod",
+     "start": "2022-07-15",
+     "end": "2022-07-16"
+    },
+    "stat": "first",
+    "column": "RECO_NT_VUT_REF",
+    "tolerance": 0.05
+   }
+  },
+  {
+   "id": "eco-09",
+   "domain": "ecosystem",
+   "question": "Was Hyltemossa a carbon sink or source in 2023?",
+   "probes": "sign convention of NEE (negative = uptake), yearly value",
+   "expect": {
+    "variable": [
+     "icos-fluxnet._combined-fluxnet_yy.NEE_VUT_REF"
+    ],
+    "station": [
+     "SE-Htm"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-fluxnet._combined-fluxnet_yy.NEE_VUT_REF",
+     "station": "SE-Htm",
+     "start": "2023-01-01",
+     "end": "2024-01-01"
+    },
+    "stat": "sign",
+    "column": "NEE_VUT_REF"
+   }
+  },
+  {
+   "id": "eco-10",
+   "domain": "ecosystem",
+   "question": "How do I cite the near-real-time flux data from Hyltemossa?",
+   "probes": "NRT has no collection DOI: the per-object citation from the passport",
+   "expect": {
+    "variable": [
+     "icos-eco-nrt._combined-fluxes.NEE",
+     "icos-eco-nrt._combined-fluxes.FC"
+    ],
+    "station": [
+     "SE-Htm"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-eco-nrt._combined-fluxes.FC",
+     "station": "SE-Htm",
+     "max_rows": "1"
+    },
+    "stat": "passport_object_citation"
+   }
+  },
+  {
+   "id": "oce-01",
+   "domain": "ocean",
+   "question": "How many surface-ocean CO2 observations are there in the Baltic Sea in 2023?",
+   "probes": "obs table, a bounding box (no stations), estimate/summary",
+   "expect": {
+    "variable": [
+     "icos-socat._obs.fCO2",
+     "socat._obs.fCO2"
+    ],
+    "station": null
+   },
+   "truth": {
+    "query": {
+     "id": "socat._obs.fCO2",
+     "lat_min": 53,
+     "lat_max": 66,
+     "lon_min": 9,
+     "lon_max": 30,
+     "start": "2023-01-01",
+     "end": "2024-01-01"
+    },
+    "endpoint": "summary",
+    "stat": "n_obs"
+   }
+  },
+  {
+   "id": "oce-02",
+   "domain": "ocean",
+   "question": "What was the mean fCO2 in the North Sea in summer 2022, good data only?",
+   "probes": "WOCE flag 2 = good (apply_qc), box, a mean over many cruises",
+   "expect": {
+    "variable": [
+     "socat._obs.fCO2",
+     "icos-socat._obs.fCO2"
+    ],
+    "station": null,
+    "apply_qc": true
+   },
+   "truth": {
+    "query": {
+     "id": "socat._obs.fCO2",
+     "lat_min": 51,
+     "lat_max": 61,
+     "lon_min": -4,
+     "lon_max": 9,
+     "start": "2022-06-01",
+     "end": "2022-09-01",
+     "apply_qc": "true"
+    },
+    "stat": "mean",
+    "column": "fCO2",
+    "tolerance": 2.0
+   }
+  },
+  {
+   "id": "oce-03",
+   "domain": "ocean",
+   "question": "Show me the gridded monthly ocean fCO2 for the North Atlantic in 2020.",
+   "probes": "the gridded product (socat-gridded), not the observations",
+   "expect": {
+    "variable": [
+     "socat-gridded.fco2_ave_weighted",
+     "socat-gridded.fco2_ave_unwtd"
+    ],
+    "station": null
+   },
+   "truth": {
+    "query": {
+     "id": "socat-gridded.fco2_ave_weighted",
+     "lat_min": 30,
+     "lat_max": 65,
+     "lon_min": -60,
+     "lon_max": 0,
+     "start": "2020-01-01",
+     "end": "2021-01-01"
+    },
+    "endpoint": "summary",
+    "stat": "n_obs"
+   }
+  },
+  {
+   "id": "oce-04",
+   "domain": "ocean",
+   "question": "Which ICOS ocean stations are there?",
+   "probes": "find_stations refuses an obs table; the agent must explain and use the ICOS ocean store's platforms instead",
+   "expect": {
+    "variable": [
+     "icos-socat._obs.fCO2"
+    ],
+    "station": null
+   },
+   "truth": {
+    "tool": "find_stations",
+    "args": {
+     "id": "icos-socat._obs.fCO2"
+    },
+    "stat": "refusal_handled"
+   }
+  },
+  {
+   "id": "oce-05",
+   "domain": "ocean",
+   "question": "What is the sea surface temperature range in the ICOS ocean data around Iceland in 2024?",
+   "probes": "Temp in the ocean store is WATER temperature (not air); box",
+   "expect": {
+    "variable": [
+     "icos-socat._obs.Temp"
+    ],
+    "station": null
+   },
+   "truth": {
+    "query": {
+     "id": "icos-socat._obs.Temp",
+     "lat_min": 60,
+     "lat_max": 70,
+     "lon_min": -30,
+     "lon_max": -10,
+     "start": "2024-01-01",
+     "end": "2025-01-01"
+    },
+    "stat": "min_max",
+    "column": "Temp",
+    "tolerance": 0.1
+   }
+  },
+  {
+   "id": "oce-06",
+   "domain": "ocean",
+   "question": "How should I cite the SOCAT data?",
+   "probes": "get_citation on the SOCAT synthesis (a different collection from ICOS ocean)",
+   "expect": {
+    "variable": [
+     "socat._obs.fCO2"
+    ],
+    "station": null
+   },
+   "truth": {
+    "tool": "get_citation",
+    "args": {
+     "id": "socat._obs.fCO2"
+    },
+    "stat": "doi"
+   }
+  },
+  {
+   "id": "x-01",
+   "domain": "cross",
+   "question": "What greenhouse-gas data does ICOS offer?",
+   "probes": "list_datasets, three domains, no fetching",
+   "expect": {
+    "variable": null,
+    "station": null
+   },
+   "truth": {
+    "tool": "list_datasets",
+    "args": {},
+    "stat": "domains"
+   }
+  },
+  {
+   "id": "x-02",
+   "domain": "cross",
+   "question": "Is there any data at a station called Nowhere?",
+   "probes": "a station that does not exist: say so, do not invent one",
+   "expect": {
+    "variable": null,
+    "station": null
+   },
+   "truth": {
+    "tool": "find_stations",
+    "args": {
+     "id": "icos-obspack.co2.co2",
+     "text": "Nowhere"
+    },
+    "stat": "empty"
+   }
+  },
+  {
+   "id": "x-03",
+   "domain": "cross",
+   "question": "Give me CO2 at Hyltemossa in 1990.",
+   "probes": "a period before the record starts: an empty selection reported as such",
+   "expect": {
+    "variable": [
+     "icos-obspack.co2.co2"
+    ],
+    "station": [
+     "HTM150",
+     "HTM30",
+     "HTM70"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-obspack.co2.co2",
+     "station": "HTM150",
+     "start": "1990-01-01",
+     "end": "1991-01-01"
+    },
+    "stat": "count",
+    "expect_value": 0
+   }
+  },
+  {
+   "id": "x-04",
+   "domain": "cross",
+   "question": "What is the CO2 standard deviation at Hyltemossa 150 m in January 2025?",
+   "probes": "asking FOR a companion (std_dev) must find it, not the primary -- AND, today, report that /query answers 501 for it (catalogued with time_coord 'time' while the array is on time_co2; 67 of 78 icos-obspack ids, 2026-10-30) rather than substituting the primary or inventing a value",
+   "expect": {
+    "variable": [
+     "icos-obspack.co2.co2_std_dev"
+    ],
+    "station": [
+     "HTM150"
+    ]
+   },
+   "truth": {
+    "query": {
+     "id": "icos-obspack.co2.co2_std_dev",
+     "station": "HTM150",
+     "start": "2025-01-01",
+     "end": "2025-02-01"
+    },
+    "stat": "refusal_handled",
+    "until_fixed": "mean of co2_std_dev, tolerance 0.05"
+   }
+  }
+ ]
+}

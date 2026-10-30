@@ -1,0 +1,6 @@
+{
+ "url": "https://zarr.icos-cp.eu/summary?id=icos-obspack.co2.co2&start=2025-01-01&end=2025-02-01",
+ "status": 200,
+ "content_type": "application/json",
+ "body": "eyJxdWVyeV9raW5kIjoic3RhdGlvbl90aW1lIiwidmFyaWFibGUiOiJjbzIiLCJzdG9yZSI6Imljb3Mtb2JzcGFjay56YXJyIiwibl9vYnMiOjk0Mjk5LCJuX3N0YXRpb25zIjoxMzUsIm5fdGltZXN0ZXBzIjo3NDQsImVzdF9ieXRlcyI6MTAzNzI4OTAsImNhcHBlZF9hdCI6NTAwMDAwLCJsYXRfbWluIjotMjEuMDc5NiwibGF0X21heCI6ODEuMzYwNSwibG9uX21pbiI6LTQ4LjE2OTcsImxvbl9tYXgiOjEyOC45NzQyLCJ0aW1lX21pbiI6IjIwMjUtMDEtMDFUMDA6MzA6MDBaIiwidGltZV9tYXgiOiIyMDI1LTAxLTMxVDIzOjMwOjAwWiJ9"
+}

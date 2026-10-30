@@ -9,7 +9,7 @@ for a language model's context:
 * nothing large passes through: ``get_data`` caps rows, ``estimate``
   says how big a selection is before anything is fetched.
 
-Phase 1 of the plan.  This server is also the ORACLE the M9 port is
+Phases 1 and 2 of the plan.  This server is also the ORACLE the M9 port is
 replayed against, so its tool names, descriptions and answer shapes are
 the contract: change them deliberately.
 """
@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import os
 import re
 import time
@@ -26,14 +27,18 @@ from typing import Annotated, Any
 from urllib.parse import urlencode
 
 import httpx
+import numcodecs
+import numpy as np
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from pyarrow import ipc
 from pydantic import BaseModel, Field
 
+from icos_mcp import cassette
+
 PROXY = os.environ.get("ICOS_PROXY", "https://zarr.icos-cp.eu").rstrip("/")
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 ROWS_DEFAULT = 100  # rows get_data returns unless asked
 ROWS_MAX = 2000  # the most it ever returns: a context window, not a download
@@ -50,6 +55,8 @@ How to use these tools:
 1. search_variables to find the variable id -- ids look like
    icos-obspack.co2.co2.  Prefer the primary measurement over its
    companions (std_dev, nvalue, flags).
+   find_stations lists the stations carrying a variable, near a place,
+   in a box or by name -- use it to turn "Hyltemossa" into HTM150.
 2. estimate before get_data: it says how many rows a selection has.
 3. get_data returns at most a few thousand rows.  For anything larger,
    give the user its download_url, or summarise from what you fetched
@@ -78,7 +85,10 @@ def _http() -> httpx.AsyncClient:
     loop = id(asyncio.get_running_loop())
     if loop not in _clients:
         _clients[loop] = httpx.AsyncClient(
-            base_url=PROXY, timeout=120, headers={"User-Agent": f"icos-mcp/{VERSION}"}
+            base_url=PROXY,
+            timeout=120,
+            headers={"User-Agent": f"icos-mcp/{VERSION}"},
+            transport=cassette.transport(),
         )
     return _clients[loop]
 
@@ -428,10 +438,11 @@ _SYNONYMS = {
     "radon": "rn",
     "radiocarbon": "14co2",
     "temperature": "ta temp",
-    "air temperature": "ta temp",
+    "air temperature": "ta at",
     "humidity": "rh",
     "relative humidity": "rh",
-    "pressure": "pa pres",
+    "pressure": "pa pres ap",
+    "air pressure": "pa ap",
     "wind speed": "ws",
     "wind direction": "wd",
     "precipitation": "p",
@@ -452,12 +463,25 @@ _SYNONYMS = {
 }
 
 
-def _expand(text: str) -> str:
+_NRT = re.compile(
+    r"\b(nrt|near[- ]real[- ]time|real[- ]time|latest|recent|today)\b", re.IGNORECASE
+)
+_NRT_STORES = {"icos-eco-nrt.zarr"}
+
+
+def _concepts(text: str) -> list[tuple[str, ...]]:
+    """The query as CONCEPTS, each a tuple of alternative spellings: a
+    phrase the synonym table knows ("carbon dioxide") is ONE concept with
+    its codes beside it (co2), so a long name that spells out both the
+    words and the code is not counted twice."""
     t = text.lower()
+    out: list[tuple[str, ...]] = []
     for phrase in sorted(_SYNONYMS, key=len, reverse=True):
         if phrase in t:
-            t += " " + _SYNONYMS[phrase]
-    return t
+            out.append((phrase, *_SYNONYMS[phrase].split()))
+            t = t.replace(phrase, " ")
+    out.extend((w,) for w in re.split(r"[^0-9a-z]+", t) if w)
+    return out
 
 
 def _as_variable(v: dict) -> Variable:
@@ -494,8 +518,9 @@ async def search_variables(
     """Find variable ids in the ICOS catalogue by name, quantity or unit.
     The ids are what estimate and get_data take.  Primary measurements come
     before their companions (standard deviation, value counts, flags)."""
-    words = [w for w in re.split(r"[^0-9a-z]+", _expand(text)) if w]
+    concepts = _concepts(text)
     ask_companion = bool(_COMPANION.search(text))
+    ask_nrt = bool(_NRT.search(text))
     scored = []
     for v in await _catalogue():
         if domain and v.get("domain") != domain:
@@ -508,21 +533,26 @@ async def search_variables(
         score = 0
         if short == text.lower().strip():
             score += 20
-        for w in words:
-            if w == short:
+        unit = (v.get("unit") or "").lower()
+        for alts in concepts:
+            if short in alts:
                 score += 10
-            elif w in short:
+            elif any(a in short for a in alts if " " not in a):
                 score += 5
-            if re.search(rf"\b{re.escape(w)}", long_):
+            if any(re.search(rf"\b{re.escape(a)}", long_) for a in alts):
                 score += 4
-            if w in vid:
+            if any(a in vid for a in alts if " " not in a):
                 score += 2
-            if w in (v.get("unit") or "").lower():
+            if any(a in unit for a in alts if " " not in a):
                 score += 1
         if not score:
             continue
         if not ask_companion and _COMPANION.search(short):
             score -= 8
+        # a released, curated store answers a general question before
+        # the near-real-time one, which is asked for by name
+        if not ask_nrt and v.get("zarr_store") in _NRT_STORES:
+            score -= 6
         scored.append((-score, v["id"], v))
     scored.sort(key=lambda t: (t[0], t[1]))
     return Variables(
@@ -688,6 +718,265 @@ async def get_citation(
     await _variable(id)
     _, passport = await _query_rows({"id": id, "max_rows": 1})
     return _citation(passport)
+
+
+# ---------------------------------------------------------------- stations
+
+
+class Station(BaseModel):
+    id: str = Field(description="the id station= takes, case-sensitive")
+    name: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    elevation: float | None = None
+    sampling_height: float | None = Field(
+        default=None, description="intake height above ground, m (atmosphere)"
+    )
+    country: str | None = None
+    ecosystem: str | None = None
+    url: str | None = None
+    distance_km: float | None = None
+
+
+class StationList(BaseModel):
+    variable: str
+    stations: list[Station]
+    n_matches: int
+
+
+# the per-station coordinates a panel lifts, by the names the stores use
+_COORD = {
+    "name": ("station_name", "site_name"),
+    "latitude": ("latitude",),
+    "longitude": ("longitude",),
+    "elevation": ("elevation",),
+    "sampling_height": ("sampling_height", "intake_height"),
+    "country": ("country",),
+    "ecosystem": ("ecosystem", "ecosystem_igbp"),
+    "url": ("station_url", "source_download_url"),
+}
+
+
+async def _read_1d(base: str, meta: dict, name: str) -> list:
+    """A small 1-D array of a panel, whole: its chunks fetched through the
+    proxy and decoded with the codecs its .zarray names."""
+    z = meta[f"{name}/.zarray"]
+    n, c = z["shape"][0], z["chunks"][0]
+    comp = numcodecs.get_codec(z["compressor"]) if z.get("compressor") else None
+    filters = [numcodecs.get_codec(f) for f in (z.get("filters") or [])]
+    out: list = []
+    for k in range((n + c - 1) // c):
+        raw = (await _get(f"{base}/{name}/{k}")).content
+        if comp:
+            raw = comp.decode(raw)
+        for f in reversed(filters):
+            raw = f.decode(raw)
+        a = (
+            raw
+            if isinstance(raw, np.ndarray) and raw.dtype == object
+            else np.frombuffer(raw, dtype=np.dtype(z["dtype"]))
+        )
+        out.extend(a[: min(c, n - k * c)].tolist())
+    return out
+
+
+async def _station_table(v: dict) -> list[dict]:
+    if v.get("query_kind") != "station_time":
+        raise ToolError(
+            f"{v['id']} is a {v.get('query_kind')} variable: it has no station "
+            "list; select by bounding box (lat_min..lon_max) or, for ocean "
+            "observations, by cruise"
+        )
+    base = f"/{v['zarr_store']}/{v['group']}"
+    hit = _cache.get(f"stations:{base}")
+    if hit and time.monotonic() - hit[0] < CACHE_S:
+        return hit[1]
+    meta = (await _get(f"{base}/.zmetadata")).json()["metadata"]
+    ids = await _read_1d(base, meta, "station")
+    cols: dict[str, list] = {}
+    for key, names in _COORD.items():
+        for nm in names:
+            if f"{nm}/.zarray" in meta:
+                cols[key] = await _read_1d(base, meta, nm)
+                break
+    rows = []
+    for i, sid in enumerate(ids):
+        r = {"id": sid}
+        for key, vals in cols.items():
+            x = vals[i]
+            if isinstance(x, float) and math.isnan(x):
+                x = None
+            r[key] = x or None if isinstance(x, str) else x
+        rows.append(r)
+    _cache[f"stations:{base}"] = (time.monotonic(), rows)
+    return rows
+
+
+def _km(lat1, lon1, lat2, lon2) -> float:
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dp, dl = p2 - p1, np.radians(lon2 - lon1)
+    a = np.sin(dp / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dl / 2) ** 2
+    return float(6371.0 * 2 * np.arcsin(np.sqrt(a)))
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def find_stations(
+    id: Annotated[
+        str, Field(description="a station-based variable id from search_variables")
+    ],
+    near_lat: Annotated[
+        float | None,
+        Field(
+            ge=-90,
+            le=90,
+            description="search around this point, with near_lon and radius_km",
+        ),
+    ] = None,
+    near_lon: Annotated[float | None, Field(ge=-180, le=180)] = None,
+    radius_km: Annotated[float, Field(gt=0, le=20000)] = 300,
+    lat_min: Lat = None,
+    lat_max: Lat = None,
+    lon_min: Lon = None,
+    lon_max: Lon = None,
+    text: Annotated[
+        str | None,
+        Field(
+            description="part of a station's id or name, e.g. "
+            "'Hyltemossa', 'HTM', 'Hyy'"
+        ),
+    ] = None,
+    country: Annotated[
+        str | None, Field(description="two-letter code, e.g. SE")
+    ] = None,
+    limit: Annotated[int, Field(ge=1, le=200)] = 50,
+) -> StationList:
+    """The stations that carry a variable: id, name, position, sampling height,
+    country, ecosystem -- near a point (sorted by distance), in a box, by name
+    or by country.  The ids are what estimate and get_data take as station=."""
+    rows = await _station_table(await _variable(id))
+    out = []
+    for r in rows:
+        lat, lon = r.get("latitude"), r.get("longitude")
+        if text and text.lower() not in f"{r['id']} {r.get('name') or ''}".lower():
+            continue
+        if country and (r.get("country") or "").upper() != country.upper():
+            continue
+        boxed = None not in (lat_min, lat_max, lon_min, lon_max)
+        if boxed and (
+            lat is None
+            or lon is None
+            or not (lat_min <= lat <= lat_max and lon_min <= lon <= lon_max)
+        ):
+            continue
+        d = None
+        if near_lat is not None and near_lon is not None:
+            if lat is None or lon is None:
+                continue
+            d = round(_km(near_lat, near_lon, lat, lon), 1)
+            if d > radius_km:
+                continue
+        out.append(Station(**r, distance_km=d))
+    out.sort(key=lambda s: (s.distance_km if s.distance_km is not None else 0, s.id))
+    return StationList(variable=id, stations=out[:limit], n_matches=len(out))
+
+
+# ---------------------------------------------------------------- resources
+
+
+def _store_name(store: str) -> str:
+    return store if store.endswith(".zarr") else f"{store}.zarr"
+
+
+@mcp.resource(
+    "icos://stores/{store}/agent-guide",
+    mime_type="application/json",
+    description="how to open and read one ICOS store: layout, coordinates, QC, "
+    "citation -- written for agents",
+)
+async def agent_guide(store: str) -> str:
+    return (await _get(f"/{_store_name(store)}/agent_guide")).text
+
+
+@mcp.resource(
+    "icos://stores/{store}/croissant",
+    mime_type="application/ld+json",
+    description="the store's Croissant (ML dataset) description: every queryable "
+    "variable with its unit",
+)
+async def croissant(store: str) -> str:
+    return (await _get(f"/{_store_name(store)}/croissant")).text
+
+
+@mcp.resource(
+    "icos://catalogue",
+    mime_type="application/json",
+    description="every queryable variable: id, names, unit, QC flag, store",
+)
+async def catalogue() -> str:
+    return json.dumps(await _catalogue(), ensure_ascii=False)
+
+
+@mcp.resource(
+    "icos://llms.txt",
+    mime_type="text/plain",
+    description="the service's own guide for language models",
+)
+async def llms_txt() -> str:
+    return (await _get("/llms.txt")).text
+
+
+@mcp.resource(
+    "icos://data-passport",
+    mime_type="text/markdown",
+    description="what the data passport in every answer contains and how to cite",
+)
+async def data_passport() -> str:
+    return (await _get("/data-passport.md")).text
+
+
+# ---------------------------------------------------------------- prompts
+
+
+@mcp.prompt(title="A station's record")
+def station_record(
+    quantity: str = "CO2",
+    station: str = "Hyltemossa",
+    period: str = "the last full year",
+) -> str:
+    """Plot or describe one station's time series."""
+    return (
+        f"Show {quantity} at {station} over {period}. Use search_variables to find the "
+        f"variable, find_stations to get the station id, estimate the selection, then "
+        f"get_data. If the selection is larger than get_data returns, summarise what "
+        f"you fetched and give the download_url for the rest. Report the unit, the "
+        f"quality-control choice (apply_qc), and the citation, licence and DOI."
+    )
+
+
+@mcp.prompt(title="Compare stations")
+def compare_stations(
+    quantity: str = "CH4",
+    stations: str = "Hyltemossa, Norunda, Svartberget",
+    period: str = "2025",
+) -> str:
+    """Compare one quantity across several stations."""
+    return (
+        f"Compare {quantity} at {stations} during {period}. Resolve each station with "
+        f"find_stations, check sizes with estimate, fetch with get_data (one station= list "
+        f"is fine), and compare like with like: same sampling height where it matters, "
+        f"the same QC. Cite every dataset you used."
+    )
+
+
+@mcp.prompt(title="Ocean CO2 in a region")
+def ocean_region(region: str = "the Baltic Sea", period: str = "2024") -> str:
+    """What surface-ocean CO2 observations exist in a region."""
+    return (
+        f"What surface-ocean CO2 (fCO2) observations exist in {region} during {period}? "
+        f"Use search_variables (ocean), estimate with a bounding box for the region, and "
+        f"get_data for a sample. Say how many observations and cruises there are, give "
+        f"the download_url for the full selection, and cite the data."
+    )
 
 
 def main() -> None:

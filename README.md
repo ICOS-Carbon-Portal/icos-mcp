@@ -6,13 +6,14 @@ Model Context Protocol.  A thin server over the ICOS zarr proxy
 data answer carries the citation, licence and DOI.  The plan, and why it
 is built this way, is [`../docs/icos-mcp-plan.md`](../docs/icos-mcp-plan.md).
 
-Phase 1 (prototype): six read-only tools.
+Phases 1 and 2: seven read-only tools, five resources, three prompts.
 
 | tool | does |
 |---|---|
 | `list_datasets` | the stores, with domain, coverage, licence, DOI |
 | `search_variables` | variable ids by name, quantity or unit ("methane" finds `ch4`) |
 | `describe_variable` | one variable in full, with how its QC flag is read |
+| `find_stations` | the stations carrying a variable: near a point, in a box, by name or country |
 | `estimate` | how big a selection is, before fetching it |
 | `get_data` | at most 2,000 rows, the total, a CSV download URL for the whole selection, the citation |
 | `get_citation` | citation, licence and DOI from the data passport |
@@ -28,10 +29,21 @@ In Claude Code:
 
     claude mcp add icos -- uv --directory /path/to/zarrm9/mcp run icos-mcp
 
+Resources: `icos://stores/{store}/agent-guide`, `icos://stores/{store}/croissant`,
+`icos://catalogue`, `icos://llms.txt`, `icos://data-passport`.  Prompts:
+`station_record`, `compare_stations`, `ocean_region`.
+
 ## Test it
 
-    uv run pytest          # live: every tool against the proxy, shapes and invariants
+    uv run pytest                                 # over RECORDED proxy answers (tests/cassette)
+    ICOS_CASSETTE_MODE=record uv run pytest       # re-record from the live proxy
+    ICOS_LIVE=1 uv run pytest                     # live, nothing recorded
     uv run ruff check src tests
+
+`eval/questions.json` is the DRAFT evaluation set: 30 questions across
+the three domains, each naming the variable and station a correct answer
+must use and a truth computed from the proxy at run time.  It needs one
+reviewer per domain before it is relied on; the runner is not written yet.
 
 This server is the ORACLE for the M9 port (`mcpd`, plan phase 7): its tool
 names, descriptions and answer shapes are the contract the port is

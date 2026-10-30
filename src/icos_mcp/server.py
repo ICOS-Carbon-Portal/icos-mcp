@@ -77,7 +77,15 @@ How to use these tools:
    before today.  For the latest days or weeks -- "this week", "latest",
    "recent" -- use the near-real-time data: icos-eco-nrt for ecosystem
    fluxes and meteorology, the NRT tail of icos-obspack for gases.
-6. Always cite: every data answer carries the citation, licence (CC BY
+6. Two ocean stores, easily confused: icos-socat is the ICOS OCEAN
+   NETWORK's own release (ICOS ships and stations, ICOS Ocean Level 2,
+   its own DOI) -- "ICOS ocean data" means this one; socat is the GLOBAL
+   SOCAT synthesis (every contributor worldwide, SOCAT v2026, the SOCAT
+   DOI) -- "SOCAT" means this one, and socat-gridded is its monthly 1x1
+   degree grid.  Cite the store you actually used.
+7. For a gridded product, estimate's rows ARE the grid cells with data:
+   that number answers "how many cells", do not count them by hand.
+8. Always cite: every data answer carries the citation, licence (CC BY
    4.0) and DOI.  Pass them on to the user.
 Station ids are CASE-SENSITIVE: atmosphere stations are a trigram plus
 the sampling height (HTM150 = Hyltemossa, 150 m), FLUXNET sites are

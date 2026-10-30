@@ -125,6 +125,17 @@ def truth(q: dict):
             tcol = next(c for c in tab.column_names if c.startswith("time"))
             ok_t = [tab.column(tcol)[i].as_py() for i in range(tab.num_rows) if ok[i]]
             return (str(ok_t[-1])[:16] if ok_t else None), None
+        if stat == "mean" and t.get("also"):
+            # several right answers: the same selection over each named store
+            vals = [float(v[ok].mean())]
+            for alt in t["also"]:
+                tb, _ = _arrow({**params, **alt})
+                x = np.asarray(
+                    tb.column(alt.get("column", col)).to_numpy(zero_copy_only=False),
+                    dtype=float,
+                )
+                vals.append(float(x[np.isfinite(x)].mean()))
+            return vals, None
         if stat == "mean":
             return (float(v[ok].mean()) if ok.any() else None), None
         if stat == "sum":
@@ -422,6 +433,9 @@ def grade_answer(q: dict, want, answer: str) -> tuple[bool | None, str]:
         tol = tol or max(1.0, abs(want) * 0.01)
         hit = any(abs(n - want) <= tol for n in nums)
         return hit, f"truth {want:.4g}"
+    if stat == "mean" and isinstance(want, list):
+        hit = any(any(abs(n - w) <= tol for n in nums) for w in want)
+        return hit, f"truth any of {[round(w, 2) for w in want]}"
     if stat == "min_max":
         return all(
             any(abs(n - w) <= max(tol, 1e-6) for n in nums) for w in want

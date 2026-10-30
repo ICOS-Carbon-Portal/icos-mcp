@@ -512,7 +512,7 @@
    "id": "oce-02",
    "domain": "ocean",
    "question": "What was the mean fCO2 in the North Sea in summer 2022 (June to August), good data only? Use the box 51-61 N, 4 W - 9 E.",
-   "probes": "WOCE flag 2 = good (apply_qc), box, a mean over many cruises",
+   "probes": "WOCE flag 2 = good (apply_qc), box, a mean over many cruises; the question names no store, so either ocean store's mean is right if the answer says which",
    "expect": {
     "variable": [
      "socat._obs.fCO2",
@@ -534,7 +534,12 @@
     },
     "stat": "mean",
     "column": "fCO2",
-    "tolerance": 2.0
+    "tolerance": 2.0,
+    "also": [
+     {
+      "id": "icos-socat._obs.fCO2"
+     }
+    ]
    }
   },
   {

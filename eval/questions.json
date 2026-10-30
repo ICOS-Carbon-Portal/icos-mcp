@@ -273,7 +273,9 @@
    "expect": {
     "variable": [
      "icos-fluxnet._combined-fluxnet_mm.GPP_NT_VUT_REF",
-     "icos-fluxnet._combined-fluxnet_mm.GPP_DT_VUT_REF"
+     "icos-fluxnet._combined-fluxnet_mm.GPP_DT_VUT_REF",
+     "icos-fluxnet._combined-fluxnet_dd.GPP_NT_VUT_REF",
+     "icos-fluxnet._combined-fluxnet_dd.GPP_DT_VUT_REF"
     ],
     "station": [
      "FI-Hyy"

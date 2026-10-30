@@ -18,6 +18,7 @@ the contract: change them deliberately.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import io
 import json
 import math
@@ -72,7 +73,11 @@ How to use these tools:
    percentiles, daytime partitioning) live in the zarr cubes NEE, GPP and
    RECO: search_variables lists them with access "zarr", and
    describe_variable gives the xarray line that reads any slice.
-5. Always cite: every data answer carries the citation, licence (CC BY
+5. The released stores (icos-fluxnet, icos-obspack releases) end months
+   before today.  For the latest days or weeks -- "this week", "latest",
+   "recent" -- use the near-real-time data: icos-eco-nrt for ecosystem
+   fluxes and meteorology, the NRT tail of icos-obspack for gases.
+6. Always cite: every data answer carries the citation, licence (CC BY
    4.0) and DOI.  Pass them on to the user.
 Station ids are CASE-SENSITIVE: atmosphere stations are a trigram plus
 the sampling height (HTM150 = Hyltemossa, 150 m), FLUXNET sites are
@@ -404,6 +409,11 @@ class Citation(BaseModel):
         description="stable id of this exact selection over this exact store version",
     )
     store_version: str | None = None
+    sources: list[str] | None = Field(
+        default=None,
+        description="the citation of each data object the selection came from -- "
+        "what to cite when there is no collection citation (near-real-time data)",
+    )
 
 
 class Data(BaseModel):
@@ -493,7 +503,13 @@ async def _estimate(var_id: str, params: dict, tok: str | None) -> Estimate:
     if s and not narrowed:
         return Estimate(
             id=var_id,
-            rows=s.get("n_obs"),
+            note=(
+                f"a GRID: rows are the {s['n_cells']} grid cells with data, over "
+                f"{s.get('n_timesteps')} time steps"
+                if "n_cells" in s
+                else None
+            ),
+            rows=s.get("n_obs", s.get("n_cells")),
             exact=True,
             n_stations=s.get("n_stations"),
             est_bytes=s.get("est_bytes"),
@@ -564,7 +580,15 @@ def _citation(passport: dict) -> Citation:
         ),
         {},
     )
+    objs = [
+        n.get("citation")
+        for n in passport.get("@graph", [])
+        if isinstance(n.get("@type"), list)
+        and "icos:DataObject" in n["@type"]
+        and n.get("citation")
+    ]
     return Citation(
+        sources=objs or None,
         citation=node.get("citation"),
         license=node.get("license"),
         license_url=node.get("license_url"),
@@ -572,6 +596,22 @@ def _citation(passport: dict) -> Citation:
         selection_id=node.get("selectionId"),
         store_version=node.get("storeVersion"),
     )
+
+
+async def _cite(var_id: str, stations: list[str] | None) -> Citation:
+    """The citation of a selection.  A store with a collection citation
+    answers it from one row.  Near-real-time data cite each data OBJECT, and
+    a TRUNCATED panel answer drops those from its passport (the transcribed
+    reference behaviour: the survivors are recorded after the loop the cap
+    breaks), so the newest days are asked for whole."""
+    base = {"id": var_id, **({"station": ",".join(stations)} if stations else {})}
+    _, passport = await _query_rows({**base, "max_rows": 1})
+    c = _citation(passport)
+    if not c.citation and not c.sources:
+        recent = str(dt.datetime.now(dt.UTC).date() - dt.timedelta(days=3))
+        _, passport = await _query_rows({**base, "start": recent, "max_rows": 100_000})
+        c = _citation(passport)
+    return c
 
 
 async def _query_rows(params: dict) -> tuple[list[dict], dict]:
@@ -968,6 +1008,9 @@ async def get_data(
         for k in r:
             if k not in cols:
                 cols.append(k)
+    cite = _citation(passport)
+    if not cite.citation and not cite.sources:
+        cite = await _cite(id, station)
     return Data(
         id=id,
         columns=cols,
@@ -977,20 +1020,26 @@ async def get_data(
         truncated=truncated,
         download_url=f"{POLICY.url_for(var['zarr_store'])}/query?"
         f"{urlencode({**params, 'format': 'csv'})}",
-        citation=_citation(passport),
+        citation=cite,
     )
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def get_citation(
     id: Annotated[str, Field(description="a variable id from search_variables")],
+    station: Annotated[
+        str | None,
+        Field(
+            description="a station id: near-real-time data cite the object of each "
+            "station, so name the station whose data you cite"
+        ),
+    ] = None,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Citation:
     """How to cite a variable's data: the citation text, licence and DOI from
     its data passport."""
     await _variable(id, _token(ctx))
-    _, passport = await _query_rows({"id": id, "max_rows": 1})
-    return _citation(passport)
+    return await _cite(id, [station] if station else None)
 
 
 # ---------------------------------------------------------------- aggregate

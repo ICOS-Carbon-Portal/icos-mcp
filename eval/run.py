@@ -175,6 +175,8 @@ QWEN_URL = os.environ.get("QWEN_BASE_URL", "http://icoscp-spark1:30000").rstrip(
 QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3-8-27b")
 TOOL_RESULT_MAX = 12_000  # characters of one tool result handed back to the model
 TURNS_MAX = 14
+# what a real MCP client tells its model and a bare endpoint does not: the date
+TODAY = f"\n\nToday is {dt.datetime.now(dt.UTC).date()} (UTC)."
 
 
 async def _qwen(question: str, model: str, think: bool) -> dict:
@@ -197,7 +199,7 @@ async def _qwen(question: str, model: str, think: bool) -> dict:
             for t in (await c.list_tools()).tools
         ]
         messages = [
-            {"role": "system", "content": c.instructions or ""},
+            {"role": "system", "content": (c.instructions or "") + TODAY},
             {"role": "user", "content": question},
         ]
         for _ in range(TURNS_MAX):
@@ -404,6 +406,18 @@ def grade_answer(q: dict, want, answer: str) -> tuple[bool | None, str]:
     low = answer.lower()
     if want is None:
         return None, "no truth"
+    if stat == "last_time":
+        return want[:10] in answer, f"truth {want}"
+    if (
+        want == 0
+        and stat == "count"
+        and re.search(
+            r"\b(no data|no (co2|ch4|observations|rows|values|measurements)|not covered|"
+            r"(starts|begins) in)\b",
+            low,
+        )
+    ):
+        return True, "an empty selection said so"
     if isinstance(want, float | int) and not isinstance(want, bool):
         tol = tol or max(1.0, abs(want) * 0.01)
         hit = any(abs(n - want) <= tol for n in nums)

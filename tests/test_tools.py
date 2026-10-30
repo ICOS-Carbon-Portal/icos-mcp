@@ -7,6 +7,7 @@ the answers are recorded, they also pin the values.
 
 import json
 import logging
+import os
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -128,8 +129,9 @@ async def test_citation_matches_the_data_answer():
     d = (
         await call("get_data", {"id": CO2, "station": ["HTM150"], **JAN, "max_rows": 1})
     ).structured_content
-    assert c["citation"] == d["citation"]["citation"]
-    assert json.dumps(c["license"]) == json.dumps(d["citation"]["license"])
+    # the data answer's is the SHORT form of the same citation
+    assert c["citation"].split(",")[0] == d["citation"]["citation"].split(",")[0]
+    assert c["doi"] == d["citation"]["doi"] and c["license"] == d["citation"]["license"]
 
 
 async def test_find_stations_by_name_gives_ids_get_data_accepts():
@@ -293,3 +295,66 @@ async def test_an_empty_estimate_says_where_the_record_is():
         )
     ).structured_content
     assert e["rows"] == 0 and "runs" in e["note"]
+
+
+Y2023 = {"start": "2023-01-01", "end": "2024-01-01"}
+
+
+async def test_a_station_estimate_is_exact_and_says_its_span():
+    # the review's case: it used to answer only "at most 1,068,138" for the box
+    e = (
+        await call("estimate", {"id": CO2, "station": "HTM150", **Y2023})
+    ).structured_content
+    a = (
+        await call("aggregate", {"id": CO2, "station": "HTM150", **Y2023})
+    ).structured_content
+    assert e["exact"] and e["rows"] == a["rows_used"] == 8475
+    assert e["time_min"].startswith("2023-01") and e["n_stations"] == 1
+
+
+async def test_a_station_as_a_plain_string():
+    d = (
+        await call("get_data", {"id": CO2, "station": "HTM150", **JAN, "max_rows": 1})
+    ).structured_content
+    assert d["rows"][0][d["columns"].index("station")] == "HTM150"
+
+
+async def test_data_answers_carry_a_short_citation_and_get_citation_the_whole():
+    a = (
+        await call("aggregate", {"id": CO2, "station": "HTM150", **JAN})
+    ).structured_content
+    full = (await call("get_citation", {"id": CO2})).structured_content["citation"]
+    short = a["citation"]["citation"]
+    assert len(full) > 1000 and len(short) < 400 and " et al." in short
+    assert full.split(",")[0] == short.split(",")[0]  # the same first author
+    assert "doi.org" in short  # the DOI kept
+
+
+# LIVE ONLY: it reads several hundred MB of real observations, which no
+# recording in this repository should hold.  ICOS_LIVE=1 uv run pytest
+@pytest.mark.skipif(
+    os.environ.get("ICOS_LIVE") != "1", reason="live only (ICOS_LIVE=1)"
+)
+async def test_aggregate_splits_a_selection_over_the_cap_and_stays_exact():
+    big = {
+        "id": "socat._obs.fCO2",
+        "lat_min": 53,
+        "lat_max": 66,
+        "lon_min": 9,
+        "lon_max": 30,
+        "start": "2015-01-01",
+        "end": "2025-01-01",
+        "apply_qc": False,
+    }
+    a = (await call("aggregate", big)).structured_content
+    assert a["rows_used"] > 500_000 and "time windows" in a["note"]
+    # the same statistics from two halves fetched separately must agree
+    halves = [
+        (await call("aggregate", {**big, "start": s, "end": e})).structured_content
+        for s, e in (("2015-01-01", "2020-01-01"), ("2020-01-01", "2025-01-01"))
+    ]
+    n = sum(h["groups"][0]["n"] for h in halves)
+    mean = sum(h["groups"][0]["n"] * h["groups"][0]["mean"] for h in halves) / n
+    assert a["groups"][0]["n"] == n
+    assert abs(a["groups"][0]["mean"] - mean) < 1e-6
+    assert a["groups"][0]["max"] == max(h["groups"][0]["max"] for h in halves)

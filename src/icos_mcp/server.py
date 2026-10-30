@@ -74,6 +74,9 @@ How to use these tools:
    percentiles, daytime partitioning) live in the zarr cubes NEE, GPP and
    RECO: search_variables lists them with access "zarr", and
    describe_variable gives the xarray line that reads any slice.
+   Their UNITS differ by store: icos-fluxnet's daily/weekly/monthly/yearly
+   NEE is gC m-2 d-1 (yearly gC m-2 y-1), the near-real-time icos-eco-nrt
+   NEE is umol m-2 s-1 per half-hour -- say which when comparing.
 5. The released stores (icos-fluxnet, icos-obspack releases) end months
    before today.  For the latest days or weeks -- "this week", "latest",
    "recent" -- use the near-real-time data: icos-eco-nrt for ecosystem
@@ -421,6 +424,9 @@ class Estimate(BaseModel):
 
 
 class Citation(BaseModel):
+    """In data answers the author list is shortened (first author et al.);
+    get_citation gives the full citation."""
+
     citation: str | None = None
     license: str | None = None
     license_url: str | None = None
@@ -460,6 +466,13 @@ Lat = Annotated[float | None, Field(ge=-90, le=90)]
 Lon = Annotated[float | None, Field(ge=-180, le=180)]
 
 
+def _ids(v: list[str] | str) -> list[str]:
+    """A list of ids, or one id / a comma-separated string of them."""
+    if isinstance(v, str):
+        return [x.strip() for x in v.split(",") if x.strip()]
+    return list(v)
+
+
 def _filters(
     lat_min,
     lat_max,
@@ -487,9 +500,9 @@ def _filters(
         if v is not None:
             p[k] = v
     if station:
-        p["station"] = ",".join(station)
+        p["station"] = ",".join(_ids(station))
     if cruise:
-        p["cruise"] = ",".join(cruise)
+        p["cruise"] = ",".join(_ids(cruise))
     if apply_qc:
         p["apply_qc"] = "true"
     return p
@@ -499,10 +512,25 @@ def _filters(
 _NOT_SUMMARISED = ("station", "cruise", "height_min", "height_max", "apply_qc")
 
 
-async def _count_arrow(params: dict) -> int:
-    r = await _get("/query", {**params, "format": "arrow", "max_rows": COUNT_MAX + 1})
+async def _count_arrow(params: dict) -> tuple[int, str | None, str | None, int | None]:
+    """Rows, time span and stations of a selection, counted from its Arrow
+    answer (up to the cap)."""
+    r = await _get(
+        "/query", {**params, "format": "arrow", "max_rows": AGG_ROWS_MAX + 1}
+    )
     with ipc.open_stream(io.BytesIO(r.content)) as rd:
-        return sum(b.num_rows for b in rd)
+        tab = rd.read_all()
+    t_min = t_max = None
+    tcol = next((c for c in tab.column_names if c.startswith("time")), None)
+    if tab.num_rows and tcol:
+        t = tab.column(tcol).to_numpy(zero_copy_only=False).astype("datetime64[s]")
+        t_min, t_max = f"{t.min()}Z", f"{t.max()}Z"
+    n_st = (
+        len(set(tab.column("station").to_pylist()))
+        if tab.num_rows and "station" in tab.column_names
+        else None
+    )
+    return tab.num_rows, t_min, t_max, n_st
 
 
 async def _estimate(var_id: str, params: dict, tok: str | None) -> Estimate:
@@ -538,7 +566,10 @@ async def _estimate(var_id: str, params: dict, tok: str | None) -> Estimate:
             time_max=s.get("time_max"),
         )
     bound = s.get("n_obs") if s else None
-    if bound is not None and bound > COUNT_MAX:
+    # a station or cruise selection is SMALL whatever the box says -- count
+    # it; only an unselective one too big to count gets the bound
+    selective = "station" in params or "cruise" in params
+    if bound is not None and bound > COUNT_MAX and not selective:
         return Estimate(
             id=var_id,
             rows=None,
@@ -547,24 +578,26 @@ async def _estimate(var_id: str, params: dict, tok: str | None) -> Estimate:
             n_stations=s.get("n_stations"),
             time_min=s.get("time_min"),
             time_max=s.get("time_max"),
-            note="the station/cruise/height/QC filters are not counted "
-            "server-side; this is the bound from the box and time alone",
+            note="an upper bound from the box and time alone (quality control and "
+            "height are not counted server-side); aggregate counts it exactly",
         )
-    n = await _count_arrow({"id": var_id, **params})
-    if n > COUNT_MAX:
+    n, t_min, t_max, n_st = await _count_arrow({"id": var_id, **params})
+    if n > AGG_ROWS_MAX:
         return Estimate(
             id=var_id,
             rows=None,
             rows_at_most=None,
             exact=False,
-            note=f"more than {COUNT_MAX:,} rows",
+            note=f"more than {AGG_ROWS_MAX:,} rows",
         )
     note = await _empty_note(var_id, params) if n == 0 else None
     return Estimate(
         id=var_id,
         rows=n,
         exact=True,
-        n_stations=None if narrowed else (s or {}).get("n_stations"),
+        n_stations=n_st,
+        time_min=t_min,
+        time_max=t_max,
         note=note,
     )
 
@@ -592,7 +625,25 @@ async def _empty_note(var_id: str, params: dict) -> str:
     )
 
 
-def _citation(passport: dict) -> Citation:
+_YEAR = re.compile(r"[ ,(]\(?((?:19|20)\d\d)\)?[.,]")
+
+
+def _short(cit: str | None) -> str | None:
+    """The first author, et al., and everything from the year on (title,
+    publisher, DOI): an ICOS author list runs to 5 KB, and a data answer
+    repeats it on every call.  get_citation gives the whole text."""
+    if not cit or len(cit) <= 300:
+        return cit
+    m = _YEAR.search(cit)
+    if not m:
+        return cit
+    authors = cit[: m.start()].split("., ")
+    if len(authors) <= 3:
+        return cit
+    return f"{authors[0]}. et al.{cit[m.start() :]}"
+
+
+def _citation(passport: dict, short: bool = False) -> Citation:
     node = next(
         (
             n
@@ -608,9 +659,11 @@ def _citation(passport: dict) -> Citation:
         and "icos:DataObject" in n["@type"]
         and n.get("citation")
     ]
+    if short:
+        objs = [_short(o) for o in objs]
     return Citation(
         sources=objs or None,
-        citation=node.get("citation"),
+        citation=_short(node.get("citation")) if short else node.get("citation"),
         license=node.get("license"),
         license_url=node.get("license_url"),
         doi=node.get("collection_doi"),
@@ -619,7 +672,9 @@ def _citation(passport: dict) -> Citation:
     )
 
 
-async def _cite(var_id: str, stations: list[str] | None) -> Citation:
+async def _cite(
+    var_id: str, stations: list[str] | None, short: bool = False
+) -> Citation:
     """The citation of a selection.  A store with a collection citation
     answers it from one row.  Near-real-time data cite each data OBJECT, and
     a TRUNCATED panel answer drops those from its passport (the transcribed
@@ -627,11 +682,11 @@ async def _cite(var_id: str, stations: list[str] | None) -> Citation:
     breaks), so the newest days are asked for whole."""
     base = {"id": var_id, **({"station": ",".join(stations)} if stations else {})}
     _, passport = await _query_rows({**base, "max_rows": 1})
-    c = _citation(passport)
+    c = _citation(passport, short)
     if not c.citation and not c.sources:
         recent = str(dt.datetime.now(dt.UTC).date() - dt.timedelta(days=3))
         _, passport = await _query_rows({**base, "start": recent, "max_rows": 100_000})
-        c = _citation(passport)
+        c = _citation(passport, short)
     return c
 
 
@@ -914,21 +969,25 @@ StartT = Annotated[
 ]
 EndT = Annotated[str | None, Field(description="ISO date or datetime, EXCLUSIVE")]
 Stations = Annotated[
-    list[str] | None,
+    list[str] | str | None,
     Field(
-        description="station ids, CASE-SENSITIVE: "
-        "HTM150 (trigram + sampling height) for atmosphere, SE-Htm for "
-        "FLUXNET sites"
+        description="station ids -- a list, or one id (or several, comma-separated) "
+        "as a string; CASE-SENSITIVE: HTM150 (trigram + sampling height) for "
+        "atmosphere, SE-Htm for FLUXNET sites"
     ),
 ]
 Cruises = Annotated[
-    list[str] | None,
-    Field(description="cruise expocodes; ocean observation tables only"),
+    list[str] | str | None,
+    Field(
+        description="cruise expocodes, a list or a string; ocean observation "
+        "tables only"
+    ),
 ]
 ApplyQc = Annotated[
     bool,
     Field(
-        description="drop observations the store's recommended quality control rejects"
+        description="DEFAULT TRUE: drop the observations the store's recommended "
+        "quality control rejects; false keeps every observation, flagged ones included"
     ),
 ]
 
@@ -946,7 +1005,7 @@ async def estimate(
     cruise: Cruises = None,
     height_min: float | None = None,
     height_max: float | None = None,
-    apply_qc: ApplyQc = False,
+    apply_qc: ApplyQc = True,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Estimate:
     """How big a selection is -- rows, stations, time span -- without fetching
@@ -984,7 +1043,7 @@ async def get_data(
     cruise: Cruises = None,
     height_min: float | None = None,
     height_max: float | None = None,
-    apply_qc: ApplyQc = False,
+    apply_qc: ApplyQc = True,
     max_rows: Annotated[
         int,
         Field(
@@ -1029,9 +1088,9 @@ async def get_data(
         for k in r:
             if k not in cols:
                 cols.append(k)
-    cite = _citation(passport)
+    cite = _citation(passport, short=True)
     if not cite.citation and not cite.sources:
-        cite = await _cite(id, station)
+        cite = await _cite(id, _ids(station) if station else None, short=True)
     return Data(
         id=id,
         columns=cols,
@@ -1060,7 +1119,7 @@ async def get_citation(
     """How to cite a variable's data: the citation text, licence and DOI from
     its data passport."""
     await _variable(id, _token(ctx))
-    return await _cite(id, [station] if station else None)
+    return await _cite(id, _ids(station) if station else None)
 
 
 # ---------------------------------------------------------------- aggregate
@@ -1107,15 +1166,19 @@ async def aggregate(
     cruise: Cruises = None,
     height_min: float | None = None,
     height_max: float | None = None,
-    apply_qc: ApplyQc = False,
+    apply_qc: ApplyQc = True,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Aggregate:
     """Statistics over a WHOLE selection, computed on the server: count, mean,
     min, max, sum and standard deviation of one variable, overall or per
     station, year, month or day.  Use this for any average, total, range or
-    trend instead of reading rows.  `sum` adds the values as stored: for a
-    rate per day (gC m-2 d-1) summed over daily rows that is a total, for
-    hourly concentrations it is meaningless.  Up to 500,000 rows."""
+    trend instead of reading rows.  Any size: a selection over 500,000 rows
+    is split by time on the server and merged exactly.  `std` is the
+    POPULATION standard deviation (ddof 0).  `sum` adds the values as
+    stored, which is a total only for values that are themselves totals per
+    row: summing a RATE (umol m-2 s-1 per half-hour, gC m-2 d-1 per day)
+    or a concentration gives no physical quantity -- for a flux total
+    multiply the mean by the period."""
     tok = _token(ctx)
     var = await _variable(id, tok)
     params = {
@@ -1134,30 +1197,132 @@ async def aggregate(
             apply_qc,
         ),
     }
+    name = var.get("shortname") or id.rsplit(".", 1)[-1]
+    acc: dict[tuple, list[float]] = {}  # group -> [n, sum, sumsq, min, max]
+    key_names: list[str] = []
+    state = {"rows": 0, "parts": 0, "passport": {}}
+    await _aggregate_parts(id, name, by, params, acc, key_names, state, depth=0)
+    groups = []
+    for lab in sorted(acc):
+        n, sm, sq, mn, mx = acc[lab]
+        g: dict[str, Any] = dict(zip(key_names, lab, strict=True))
+        g["n"] = int(n)
+        if n:
+            mean = sm / n
+            g.update(
+                mean=round(mean, 6),
+                min=round(mn, 6),
+                max=round(mx, 6),
+                sum=round(sm, 6),
+                std=round(math.sqrt(max(sq / n - mean * mean, 0.0)), 6),
+            )
+        else:
+            g.update(mean=None, min=None, max=None, sum=None, std=None)
+        groups.append(g)
+    notes = []
+    if state["parts"] > 1:
+        notes.append(
+            f"computed over the whole selection in {state['parts']} time windows "
+            f"(more than {AGG_ROWS_MAX:,} rows at once), merged exactly"
+        )
+    if len(groups) > AGG_GROUPS_MAX:
+        notes.append(f"{len(groups)} groups; the first {AGG_GROUPS_MAX} are listed")
+    notes.append("quality control " + ("applied" if apply_qc else "NOT applied"))
+    return Aggregate(
+        id=id,
+        variable=name,
+        unit=var.get("unit"),
+        by=by,
+        groups=groups[:AGG_GROUPS_MAX],
+        n_groups=len(groups),
+        rows_used=state["rows"],
+        note="; ".join(notes),
+        download_url=f"{POLICY.url_for(var['zarr_store'])}/query?"
+        f"{urlencode({**params, 'format': 'csv'})}",
+        citation=_citation(state["passport"], short=True),
+    )
+
+
+AGG_PARTS_MAX = 64  # windows one aggregate may split into: 32 M rows at most
+
+
+async def _aggregate_parts(
+    var_id: str,
+    name: str,
+    by: str,
+    params: dict,
+    acc: dict,
+    key_names: list,
+    state: dict,
+    depth: int,
+) -> None:
+    """Accumulate one window's partial statistics -- count, sum, sum of
+    squares, min, max per group, which merge EXACTLY -- and, when the window
+    holds more rows than one answer may, split it in two by time and recurse.
+    The model asks once; the stitching is done here, where it cannot go wrong."""
     r = await _get(
         "/query", {**params, "format": "arrow", "max_rows": AGG_ROWS_MAX + 1}
     )
     with ipc.open_stream(io.BytesIO(r.content)) as rd:
         tab = rd.read_all()
     if tab.num_rows > AGG_ROWS_MAX:
-        raise ToolError(
-            f"the selection has more than {AGG_ROWS_MAX:,} rows: narrow the time "
-            "window, the box or the stations, or aggregate in parts"
+        lo, hi = await _window(var_id, params)
+        if (
+            lo is None
+            or hi is None
+            or state["parts"] + 2 > AGG_PARTS_MAX
+            or hi - lo < np.timedelta64(2, "h")
+        ):
+            raise ToolError(
+                f"the selection is too large to aggregate even in parts "
+                f"(over {AGG_PARTS_MAX} windows of {AGG_ROWS_MAX:,} rows): narrow the "
+                "time window, the box or the stations"
+            )
+        mid = lo + (hi - lo) // 2
+        fmt = lambda t: str(t.astype("datetime64[s]"))
+        await _aggregate_parts(
+            var_id,
+            name,
+            by,
+            {**params, "start": fmt(lo), "end": fmt(mid)},
+            acc,
+            key_names,
+            state,
+            depth + 1,
         )
-    name = var.get("shortname") or id.rsplit(".", 1)[-1]
+        await _aggregate_parts(
+            var_id,
+            name,
+            by,
+            {**params, "start": fmt(mid), "end": fmt(hi)},
+            acc,
+            key_names,
+            state,
+            depth + 1,
+        )
+        return
+    state["parts"] += 1
+    state["rows"] += tab.num_rows
+    if not state["passport"]:
+        md = tab.schema.metadata or {}
+        state["passport"] = (
+            json.loads(md[b"data_passport"]) if b"data_passport" in md else {}
+        )
+    if tab.num_rows == 0:
+        return
     if name not in tab.column_names:
-        raise ToolError(f"{id}: the answer carries no column {name!r}")
+        raise ToolError(f"{var_id}: the answer carries no column {name!r}")
     try:
         v = np.asarray(tab.column(name).to_numpy(zero_copy_only=False), dtype=float)
     except (TypeError, ValueError):
         raise ToolError(
-            f"{id} is not numeric ({tab.schema.field(name).type}): there is "
+            f"{var_id} is not numeric ({tab.schema.field(name).type}): there is "
             "nothing to average -- use get_data to list its values"
         ) from None
     keys: list[tuple[str, np.ndarray]] = []
     if by.startswith("station"):
         if "station" not in tab.column_names:
-            raise ToolError(f"{id} has no stations; group by a period instead")
+            raise ToolError(f"{var_id} has no stations; group by a period instead")
         keys.append(
             ("station", np.asarray(tab.column("station").to_pylist(), dtype=object))
         )
@@ -1165,9 +1330,12 @@ async def aggregate(
     if period:
         tcol = next((c for c in tab.column_names if c.startswith("time")), None)
         if tcol is None:
-            raise ToolError(f"{id} has no time column to group by {period}")
+            raise ToolError(f"{var_id} has no time column to group by {period}")
         t = tab.column(tcol).to_numpy(zero_copy_only=False).astype("datetime64[ns]")
         keys.append((period, t.astype(_BUCKET[period]).astype(str)))
+    if not key_names:
+        key_names.extend(k[0] for k in keys)
+    ok = np.isfinite(v)
     if keys:
         combo = np.array(
             ["\x1f".join(str(k[1][i]) for k in keys) for i in range(len(v))],
@@ -1176,44 +1344,46 @@ async def aggregate(
         labels, inverse = np.unique(combo, return_inverse=True)
     else:
         labels, inverse = np.array([""]), np.zeros(len(v), dtype=int)
-    groups = []
     for gi, lab in enumerate(labels):
-        x = v[inverse == gi]
-        x = x[np.isfinite(x)]
-        g: dict[str, Any] = (
-            dict(zip([k[0] for k in keys], str(lab).split("\x1f"), strict=True))
-            if keys
-            else {}
-        )
-        n = int(x.size)
-        g["n"] = n
-        for stat, fn in (
-            ("mean", np.mean),
-            ("min", np.min),
-            ("max", np.max),
-            ("sum", np.sum),
-            ("std", np.std),
-        ):
-            g[stat] = round(float(fn(x)), 6) if n else None
-        groups.append(g)
-    note = None
-    if len(groups) > AGG_GROUPS_MAX:
-        note = f"{len(groups)} groups; the first {AGG_GROUPS_MAX} are listed"
-    md = tab.schema.metadata or {}
-    passport = json.loads(md[b"data_passport"]) if b"data_passport" in md else {}
-    return Aggregate(
-        id=id,
-        variable=name,
-        unit=var.get("unit"),
-        by=by,
-        groups=groups[:AGG_GROUPS_MAX],
-        n_groups=len(groups),
-        rows_used=tab.num_rows,
-        note=note,
-        download_url=f"{POLICY.url_for(var['zarr_store'])}/query?"
-        f"{urlencode({**params, 'format': 'csv'})}",
-        citation=_citation(passport),
-    )
+        x = v[(inverse == gi) & ok]
+        key = tuple(str(lab).split("\x1f")) if keys else ()
+        a = acc.setdefault(key, [0, 0.0, 0.0, math.inf, -math.inf])
+        if x.size:
+            a[0] += x.size
+            a[1] += float(x.sum())
+            a[2] += float((x * x).sum())
+            a[3] = min(a[3], float(x.min()))
+            a[4] = max(a[4], float(x.max()))
+
+
+async def _window(var_id: str, params: dict):
+    """The time window of a selection: its own start/end, else the
+    variable's coverage from /summary over the same box."""
+    lo, hi = params.get("start"), params.get("end")
+    if lo is None or hi is None:
+        try:
+            s = (
+                await _get(
+                    "/summary",
+                    {
+                        "id": var_id,
+                        **{
+                            k: v
+                            for k, v in params.items()
+                            if k not in _NOT_SUMMARISED and k not in ("start", "end")
+                        },
+                    },
+                )
+            ).json()
+        except ToolError:
+            s = {}
+        lo = lo or (s.get("time_min") or "").rstrip("Z") or None
+        hi = hi or (s.get("time_max") or "").rstrip("Z") or None
+        if hi and params.get("end") is None:
+            hi = str(np.datetime64(hi) + np.timedelta64(1, "s"))  # end is exclusive
+    if lo is None or hi is None:
+        return None, None
+    return np.datetime64(lo, "s"), np.datetime64(hi, "s")
 
 
 # ---------------------------------------------------------------- stations

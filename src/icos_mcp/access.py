@@ -14,6 +14,7 @@ the public stores of zarr.icos-cp.eu.  The file:
       "proxy": "http://127.0.0.1:8081",          # where requests go
       "proxy_host": "zarr-proxy",                # Host header sent (optional)
       "public_url": "https://zarr.icos-cp.eu",   # base of download links
+      "forward_client_ip": true,                 # caller -> proxy as X-Real-IP
       "stores": [                                # first matching rule wins
         {"match": "icos-*",  "access": "public"},
         {"match": "socat*",  "access": "public"},
@@ -69,6 +70,10 @@ class Policy:
     proxy_host: str | None
     public_url: str
     rules: list[Rule] = field(default_factory=list)
+    # pass the caller's address to the proxy as X-Real-IP, so its passports
+    # and its Matomo logging see the END USER and not this server -- only
+    # where the proxy believes that header from us (zpd on loopback)
+    forward_client_ip: bool = False
 
     def rule_for(self, store: str) -> Rule | None:
         name = store.removesuffix(".zarr")
@@ -146,4 +151,5 @@ def load() -> Policy:
         proxy_host=c.get("proxy_host"),
         public_url=c.get("public_url", proxy),
         rules=rules,
+        forward_client_ip=bool(c.get("forward_client_ip", False)),
     )

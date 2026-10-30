@@ -5,6 +5,7 @@ store indistinguishable from one that does not exist."""
 import json
 import logging
 
+import httpx
 import pytest
 from mcp import Client
 
@@ -143,3 +144,23 @@ async def test_a_token_store_appears_for_its_token_holder(monkeypatch):
     assert not any(i.startswith("icos-socat") for i in await _ids("ocean co2"))
     monkeypatch.setenv("ICOS_MCP_TOKEN", tok)  # the local operator's token
     assert "icos-socat._obs.fCO2" in await _ids("ocean co2")
+
+
+async def test_the_caller_reaches_the_proxy_as_x_real_ip(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("x-real-ip"))
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://p"
+    )
+    monkeypatch.setattr(server, "_http", lambda: client)
+    # caddy appended the address it got the request from: the LAST element
+    server._token(_Ctx({"x-forwarded-for": "6.6.6.6, 130.235.1.2"}))
+    monkeypatch.setattr(server.POLICY, "forward_client_ip", True)
+    await server._get("/x")
+    monkeypatch.setattr(server.POLICY, "forward_client_ip", False)
+    await server._get("/x")
+    assert seen == ["130.235.1.2", None]

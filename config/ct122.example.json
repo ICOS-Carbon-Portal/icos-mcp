@@ -3,6 +3,7 @@
   "proxy": "http://127.0.0.1:8081",
   "proxy_host": "zarr-proxy",
   "public_url": "https://zarr.icos-cp.eu",
+  "forward_client_ip": true,
   "stores": [
     {"match": "icos-obspack*", "access": "public"},
     {"match": "icos-socat*", "access": "public"},

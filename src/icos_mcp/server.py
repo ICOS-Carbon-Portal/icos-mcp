@@ -18,6 +18,7 @@ the contract: change them deliberately.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import datetime as dt
 import io
 import json
@@ -100,6 +101,11 @@ mcp = MCPServer(
 )
 
 _clients: dict[int, httpx.AsyncClient] = {}
+# the end user's address for the request in hand, set by _token from the
+# headers caddy adds; passed to the proxy when the policy says so
+_caller_ip: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "caller_ip", default=None
+)
 _cache: dict[str, tuple[float, Any]] = {}
 
 
@@ -122,7 +128,10 @@ def _http() -> httpx.AsyncClient:
 
 async def _get(path: str, params: dict | None = None) -> httpx.Response:
     try:
-        r = await _http().get(path, params=params)
+        ip = _caller_ip.get() if POLICY.forward_client_ip else None
+        r = await _http().get(
+            path, params=params, headers={"X-Real-IP": ip} if ip else None
+        )
     except httpx.HTTPError as e:
         raise ToolError(f"the ICOS proxy did not answer: {e}") from e
     if r.status_code >= 400:
@@ -157,6 +166,10 @@ def _token(ctx: Context | None) -> str | None:
     except ValueError:
         h = None
     if h is not None:
+        # caddy APPENDS the address it received the request from, so the
+        # last X-Forwarded-For element is the one hop this server trusts
+        xff = h.get("x-forwarded-for") or h.get("X-Forwarded-For") or ""
+        _caller_ip.set(xff.split(",")[-1].strip() or None)
         auth = h.get("authorization") or h.get("Authorization") or ""
         return auth[7:].strip() or None if auth.lower().startswith("bearer ") else None
     return os.environ.get("ICOS_MCP_TOKEN") or None
@@ -1551,7 +1564,28 @@ def main() -> None:
     if a.transport == "stdio":
         mcp.run("stdio")
     else:
-        mcp.run("streamable-http", host=a.host, port=a.port, stateless_http=True)
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        hosts = [
+            h.strip()
+            for h in os.environ.get("ICOS_MCP_ALLOWED_HOSTS", "").split(",")
+            if h.strip()
+        ]
+        security = None
+        if hosts:
+            # DNS-rebinding protection with the public name(s) admitted: the
+            # SDK's default admits localhost only
+            security = TransportSecuritySettings(
+                allowed_hosts=hosts,
+                allowed_origins=[f"https://{h.split(':')[0]}" for h in hosts],
+            )
+        mcp.run(
+            "streamable-http",
+            host=a.host,
+            port=a.port,
+            stateless_http=True,
+            transport_security=security,
+        )
 
 
 if __name__ == "__main__":

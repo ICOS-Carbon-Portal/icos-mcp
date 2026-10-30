@@ -309,8 +309,11 @@ def render(
     )
     dom_list = ", ".join(known_doms) or "none"
     snippet_cc = f"claude mcp add --transport http icos {endpoint}"
-    # the host a cloud environment's network allowlist must name
+    # what a cloud environment's network allowlist must name: the server's
+    # own domain and its siblings (the zarr service), as one wildcard --
+    # a leading "*." matches every subdomain there
     host = urlsplit(endpoint).hostname or endpoint
+    domains = "*." + host.split(".", 1)[1] if host.count(".") >= 2 else host
     snippet_json = (
         f'{{"mcpServers": {{"icos": {{"type": "http", "url": "{endpoint}"}}}}}}'
     )
@@ -368,9 +371,11 @@ not last: the session's machine is replaced.</p></div>
 <div class="snip"><div>A repository's .mcp.json, and other clients<button type="button">Copy</button></div><pre>{e(snippet_json)}</pre>
 <p>At the root of a repository, on the branch a session starts from, every Claude Code session
 on it loads the server. On the web the session must also be allowed to reach
-<code>{e(host)}</code>: in the cloud environment's settings set <b>Network access</b> to
-<i>Full</i>, or to <i>Custom</i> with <code>{e(host)}</code> among the allowed domains &mdash;
-the default <i>Trusted</i> list does not include it. Check with <code>/mcp</code>.
+<code>{e(domains)}</code>, this server and the zarr service its download links point to:
+in the cloud environment's settings set <b>Network access</b> to <i>Custom</i> with
+<code>{e(domains)}</code> under <b>Allowed domains</b> (or to <i>Full</i>) &mdash; the default
+<i>Trusted</i> list does not include it. Not needed with the connector above.
+Check with <code>/mcp</code>.
 Most other MCP clients take the same block in their own settings.</p></div>
 </div></section>
 

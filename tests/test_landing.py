@@ -74,4 +74,4 @@ async def test_the_web_instructions_name_the_network_setting():
     page = (await _get("/")).text
     assert "&quot;type&quot;: &quot;http&quot;, &quot;url&quot;: &quot;https://mcp.icos-cp.eu/mcp&quot;" in page
     assert "<b>Network access</b>" in page and "<i>Trusted</i>" in page
-    assert page.count("<code>mcp.icos-cp.eu</code>") == 2
+    assert page.count("<code>*.icos-cp.eu</code>") == 2

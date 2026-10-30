@@ -26,6 +26,12 @@ a per-store access policy.
 
 `ICOS_PROXY` points it at another proxy (the RC, a test instance).
 
+Over HTTP the server also answers `GET /` with an HTML page in the style
+of zarr.icos-cp.eu -- built from what it offers an anonymous caller: the
+endpoint and how to connect, the public datasets, the tools and prompts,
+the citation rule (`landing.py`; `ICOS_MCP_PUBLIC_URL` sets the endpoint
+it names, default https://mcp.icos-cp.eu) -- and `GET /health`.
+
 ## Which stores it offers
 
 DEFAULT-DENY: a store is offered only when a rule names it, whatever the

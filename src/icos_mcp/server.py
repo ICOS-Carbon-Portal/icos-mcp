@@ -37,7 +37,7 @@ from mcp_types import ToolAnnotations
 from pyarrow import ipc
 from pydantic import BaseModel, Field
 
-from icos_mcp import access, cassette
+from icos_mcp import access, cassette, landing
 
 POLICY = access.load()
 PROXY = POLICY.proxy
@@ -1472,6 +1472,47 @@ def ocean_region(region: str = "the Baltic Sea", period: str = "2024") -> str:
         f"get_data for a sample. Say how many observations and cruises there are, give "
         f"the download_url for the full selection, and cite the data."
     )
+
+
+# ---------------------------------------------------------------- the web page
+
+
+@mcp.custom_route("/", methods=["GET"], include_in_schema=False)
+async def landing_page(request):
+    """The HTML page at the server's root, built from what it offers an
+    anonymous caller (landing.py)."""
+    from starlette.responses import HTMLResponse
+
+    root = await _cached_json("/")
+    datasets = []
+    for store in root["stores"]:
+        if not POLICY.allowed(store, None):
+            continue
+        a = await _store_attrs(store)
+        datasets.append(
+            {
+                "store": store,
+                "title": a.get("title", store),
+                "domain": a.get("icos_domain", ""),
+            }
+        )
+    return HTMLResponse(
+        landing.render(
+            version=VERSION,
+            tools=await mcp.list_tools(),
+            prompts=await mcp.list_prompts(),
+            datasets=datasets,
+            token_stores=any(r.access == "token" for r in POLICY.rules),
+            zarr_url=POLICY.public_url,
+        )
+    )
+
+
+@mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
+async def health(request):
+    from starlette.responses import JSONResponse
+
+    return JSONResponse({"status": "ok", "version": VERSION})
 
 
 def main() -> None:

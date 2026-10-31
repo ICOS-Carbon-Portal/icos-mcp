@@ -55,6 +55,38 @@ store answers exactly as one that does not exist, and the static
 `icos://catalogue` resource -- which the protocol does not tell who is
 asking -- lists the public stores only.
 
+## Signing in
+
+An `oauth` section in the config makes signing in required over HTTP.
+Anyone can sign in. The aim is to know who uses the server, not to keep
+anyone out:
+
+    "oauth": {"issuer": "https://sso.fs4vm.icos-cp.eu/realms/icos-test",
+              "audience": "https://mcp.icos-cp.eu"}
+
+The server is only a resource server. ICOS's Keycloak handles the
+sign-in, through cpauth, Google or ORCID. MCP clients find Keycloak in
+`/.well-known/oauth-protected-resource`, register themselves with it and
+send the user to sign in. A token must be signed by the realm and carry
+this server's `audience`, which needs an audience mapper in Keycloak.
+The store tokens above still work. The landing page and `/health` stay
+open, and the stdio operator is never asked to sign in (`auth.py`).
+
+Signing in also allows a `group` store rule. The store is offered to
+members of a Keycloak group, or of a subgroup of one, and to no one else.
+The groups come from the verified token's `groups` claim:
+
+    {"match": "agage*", "access": "group", "groups": ["agage"],
+     "public_url": "https://agage-zarr.icos-cp.eu"}
+
+Group names are paths below `/apps/mcp` in the realm: `agage` is
+`/apps/mcp/agage`. That is the only part of a user's groups Keycloak
+sends this server.
+
+Access is granted and withdrawn in Keycloak, not in the config. A `group`
+rule may also list store tokens for scripts. A `group` rule without an
+`oauth` section is refused at load, because nobody could reach it.
+
 In Claude Code:
 
     claude mcp add icos -- uv --directory /path/to/zarrm9/mcp run icos-mcp

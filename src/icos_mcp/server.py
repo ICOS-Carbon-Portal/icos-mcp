@@ -32,13 +32,14 @@ from urllib.parse import urlencode
 import httpx
 import numcodecs
 import numpy as np
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp_types import ToolAnnotations
 from pyarrow import ipc
 from pydantic import BaseModel, Field
 
-from icos_mcp import access, cassette, landing, retro
+from icos_mcp import access, auth, cassette, landing, retro
 
 POLICY = access.load()
 PROXY = POLICY.proxy
@@ -95,12 +96,33 @@ Station ids are CASE-SENSITIVE: atmosphere stations are a trigram plus
 the sampling height (HTM150 = Hyltemossa, 150 m), FLUXNET sites are
 mixed-case site codes (SE-Htm)."""
 
+
+def _auth_args() -> dict[str, Any]:
+    """Sign-in required over HTTP when the config has an oauth section: the
+    SDK then serves the protected-resource metadata naming Keycloak and
+    answers /mcp without a valid token with 401 (auth.py)."""
+    o = POLICY.oauth
+    if o is None:
+        return {}
+    return {
+        "auth": AuthSettings(
+            issuer_url=o.issuer,
+            resource_server_url=o.resource,
+            required_scopes=[o.scope] if o.scope else None,
+            # the verifier checks the audience itself
+            validate_token_resource=False,
+        ),
+        "token_verifier": auth.Verifier(o, POLICY.store_tokens),
+    }
+
+
 mcp = MCPServer(
     name="icos",
     title="ICOS carbon and greenhouse-gas observations",
     version=VERSION,
     website_url=POLICY.public_url,
     instructions=INSTRUCTIONS,
+    **_auth_args(),
 )
 
 _clients: dict[int, httpx.AsyncClient] = {}
@@ -179,7 +201,8 @@ def _token(ctx: Context | None) -> str | None:
 
 
 def _visible(store: str, tok: str | None) -> bool:
-    return POLICY.allowed(store, tok)
+    # groups only from the token the SDK verified for this request
+    return POLICY.allowed(store, tok, auth.caller_groups())
 
 
 async def _catalogue(tok: str | None) -> list[dict]:
@@ -1985,9 +2008,16 @@ def main() -> None:
         )
         for r in POLICY.rules:
             print(
-                f"  {r.match:24s} {r.access:6s} {len(r.tokens)} token(s)  {r.public_url or ''}"
+                f"  {r.match:24s} {r.access:6s} {len(r.tokens)} token(s)  "
+                f"{' '.join(sorted(r.groups)) + '  ' if r.groups else ''}{r.public_url or ''}"
             )
         print("  anything else          hidden")
+        o = POLICY.oauth
+        print(
+            f"sign-in over HTTP: {o.issuer}  audience {o.audience}"
+            if o
+            else "sign-in over HTTP: none (anonymous)"
+        )
         return
     if a.transport == "stdio":
         mcp.run("stdio")

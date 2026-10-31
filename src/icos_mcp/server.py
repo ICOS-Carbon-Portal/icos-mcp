@@ -38,7 +38,7 @@ from mcp_types import ToolAnnotations
 from pyarrow import ipc
 from pydantic import BaseModel, Field
 
-from icos_mcp import access, cassette, landing
+from icos_mcp import access, cassette, landing, retro
 
 POLICY = access.load()
 PROXY = POLICY.proxy
@@ -1819,12 +1819,9 @@ def ocean_region(region: str = "the Baltic Sea", period: str = "2024") -> str:
 # ---------------------------------------------------------------- the web page
 
 
-@mcp.custom_route("/", methods=["GET"], include_in_schema=False)
-async def landing_page(request):
-    """The HTML page at the server's root, built from what it offers an
-    anonymous caller (landing.py)."""
-    from starlette.responses import HTMLResponse
-
+async def _anonymous_datasets() -> list[dict]:
+    """The stores the policy offers an anonymous caller, with their titles
+    and domains, as the front pages list them."""
     root = await _cached_json("/")
     datasets = []
     for store in root["stores"]:
@@ -1838,16 +1835,98 @@ async def landing_page(request):
                 "domain": a.get("icos_domain", ""),
             }
         )
-    return HTMLResponse(
-        landing.render(
-            version=VERSION,
-            tools=await mcp.list_tools(),
-            prompts=await mcp.list_prompts(),
-            datasets=datasets,
-            token_stores=any(r.access == "token" for r in POLICY.rules),
-            zarr_url=POLICY.public_url,
-        )
+    return datasets
+
+
+async def _page_args() -> dict:
+    return {
+        "version": VERSION,
+        "tools": await mcp.list_tools(),
+        "prompts": await mcp.list_prompts(),
+        "datasets": await _anonymous_datasets(),
+        "token_stores": any(r.access == "token" for r in POLICY.rules),
+        "zarr_url": POLICY.public_url,
+    }
+
+
+@mcp.custom_route("/", methods=["GET"], include_in_schema=False)
+async def landing_page(request):
+    """The HTML page at the server's root, built from what it offers an
+    anonymous caller (landing.py)."""
+    from starlette.responses import HTMLResponse
+
+    return HTMLResponse(landing.render(**await _page_args()))
+
+
+@mcp.custom_route("/r", methods=["GET"], include_in_schema=False)
+async def retro_root(request):
+    from starlette.responses import RedirectResponse
+
+    return RedirectResponse("/r/", status_code=301)
+
+
+@mcp.custom_route("/r/", methods=["GET"], include_in_schema=False)
+async def retro_home(request):
+    """The retro home page: the same server, the plain look (retro.py)."""
+    from starlette.responses import HTMLResponse
+
+    return HTMLResponse(retro.home(**await _page_args()))
+
+
+async def _retro_reading(path: str):
+    """A zarr service reading page at `path`, fetched as HTML and put in the
+    retro frame; cached as the proxy's JSON is."""
+    from starlette.responses import HTMLResponse, PlainTextResponse
+
+    key = f"html {path}"
+    hit = _cache.get(key)
+    if hit and time.monotonic() - hit[0] < CACHE_S:
+        page = hit[1]
+    else:
+        try:
+            # as the front page asks: a web route has no caller address to pass
+            r = await _http().get(path, headers={"Accept": "text/html"})
+        except httpx.HTTPError:
+            return PlainTextResponse(
+                "the ICOS zarr service did not answer", status_code=502
+            )
+        if r.status_code == 404:
+            return PlainTextResponse("not found", status_code=404)
+        if r.status_code >= 400 or not r.headers.get("content-type", "").startswith(
+            "text/html"
+        ):
+            return PlainTextResponse(
+                f"the ICOS zarr service answered {r.status_code}", status_code=502
+            )
+        page = r.text
+        _cache[key] = (time.monotonic(), page)
+    stores = [d["store"] for d in await _anonymous_datasets()]
+    out = retro.reframe(
+        page, zarr_url=POLICY.public_url, stores=stores, version=VERSION
     )
+    if out is None:
+        return PlainTextResponse(
+            "the zarr service's page has a frame this server does not know",
+            status_code=502,
+        )
+    return HTMLResponse(out)
+
+
+@mcp.custom_route("/r/data-passport.html", methods=["GET"], include_in_schema=False)
+async def retro_passport(request):
+    return await _retro_reading("/data-passport.html")
+
+
+@mcp.custom_route("/r/{store}/", methods=["GET"], include_in_schema=False)
+async def retro_store(request):
+    """A store page, retro; only a store the anonymous caller is offered,
+    so a token store is not even confirmed to exist."""
+    from starlette.responses import PlainTextResponse
+
+    store = request.path_params["store"]
+    if store not in [d["store"] for d in await _anonymous_datasets()]:
+        return PlainTextResponse("not found", status_code=404)
+    return await _retro_reading(f"/{store}/")
 
 
 @mcp.custom_route("/static/{name}", methods=["GET"], include_in_schema=False)

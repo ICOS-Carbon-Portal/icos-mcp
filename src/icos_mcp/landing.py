@@ -331,7 +331,7 @@ def render(
 <a class="brand" href="https://www.icos-cp.eu/"><img src="{static}/icos-logo.svg" alt="ICOS — Integrated Carbon Observation System">
 <span>Carbon Portal<br><b>MCP server</b></span></a>
 <div class="menu"><a href="#connect">Connect</a><a href="#domains">Datasets</a><a href="#tools">Tools</a>
-<a href="#citing">Citing</a><a class="ext" href="{e(zarr_url)}/">zarr service ↗</a></div>
+<a href="#citing">Citing</a><a class="ext" href="{e(zarr_url)}/">zarr service ↗</a><a href="/r/">Retro</a></div>
 </nav></header>
 
 <section class="hero">

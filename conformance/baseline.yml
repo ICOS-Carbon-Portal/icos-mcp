@@ -1,0 +1,50 @@
+# Known failures of icos-mcp under @modelcontextprotocol/conformance 0.1.16,
+# --suite active --spec-version 2025-11-25 (docs/plan.md, Quality 4).
+#
+# Read in BOTH directions, like gate/expected.txt: a failure not listed
+# here fails the run, and so does a listed scenario that now passes --
+# remove its line.  Recorded 2026-10-31 against icos-mcp 0.2.0, MCP SDK
+# 2.3.0 (which negotiates 2026-07-28; this suite knows up to 2025-11-25).
+#
+# None of these is a protocol defect of OURS.  Each is one of:
+#
+#   FIXTURE  the scenario calls the suite's own test tool, prompt or
+#            resource (test_image_content, test_simple_prompt,
+#            test://static-text, ...), which a real server does not carry;
+#            it fails before testing anything of ours.
+#   NOT-OFFERED  a capability icos-mcp deliberately does not declare
+#            (logging, completions, resource subscriptions, progress,
+#            sampling, elicitation): a read-only data server needs none.
+#
+# Passes that prove less than they say: tools-call-simple-text and
+# tools-call-error pass because ANY isError result for the missing fixture
+# tool satisfies them.  The checks that do test icos-mcp itself are
+# server-initialize, ping, tools-list, resources-list, prompts-list and
+# dns-rebinding-protection.
+#
+# Upstream, not ours: an unknown prompt name comes back as JSON-RPC error
+# code 0 (the SDK raises a bare ValueError) where the spec asks for -32602.
+server:
+  - logging-set-level                # NOT-OFFERED: logging
+  - completion-complete              # NOT-OFFERED: completions
+  - server-sse-multiple-streams      # a WARNING, which the baseline counts as a
+                                     # failure: no session id, stateless HTTP by design
+  - tools-call-image                 # FIXTURE: test_image_content
+  - tools-call-audio                 # FIXTURE: test_audio_content
+  - tools-call-embedded-resource     # FIXTURE: test_embedded_resource
+  - tools-call-mixed-content         # FIXTURE: test_multiple_content_types
+  - tools-call-with-logging          # FIXTURE + NOT-OFFERED: logging
+  - tools-call-with-progress         # FIXTURE + NOT-OFFERED: progress
+  - tools-call-sampling              # FIXTURE + NOT-OFFERED: sampling
+  - tools-call-elicitation           # FIXTURE + NOT-OFFERED: elicitation
+  - elicitation-sep1034-defaults     # FIXTURE + NOT-OFFERED: elicitation
+  - elicitation-sep1330-enums        # FIXTURE + NOT-OFFERED: elicitation
+  - resources-read-text              # FIXTURE: test://static-text
+  - resources-read-binary            # FIXTURE: test://static-binary
+  - resources-templates-read         # FIXTURE: test://template/{id}/data
+  - resources-subscribe              # NOT-OFFERED: subscriptions
+  - resources-unsubscribe            # NOT-OFFERED: subscriptions
+  - prompts-get-simple               # FIXTURE: test_simple_prompt
+  - prompts-get-with-args            # FIXTURE: test_prompt_with_arguments
+  - prompts-get-embedded-resource    # FIXTURE: test_prompt_with_embedded_resource
+  - prompts-get-with-image           # FIXTURE: test_prompt_with_image

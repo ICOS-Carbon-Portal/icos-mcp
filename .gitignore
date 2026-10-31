@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+conformance/node_modules/
+conformance/results/
+conformance/server.log

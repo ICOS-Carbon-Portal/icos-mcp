@@ -69,6 +69,15 @@ Resources: `icos://stores/{store}/agent-guide`, `icos://stores/{store}/croissant
     ICOS_CASSETTE_MODE=record uv run pytest       # re-record from the live proxy
     ICOS_LIVE=1 uv run pytest                     # live, nothing recorded
     uv run ruff check src tests
+    conformance/run.sh                            # the MCP conformance suite (needs Node)
+
+`conformance/run.sh` starts a local server and runs the MCP project's own
+conformance suite against it, pinned to 0.1.16 by
+`conformance/package-lock.json`.  `conformance/baseline.yml` lists the
+known failures and why each one fails (mostly the suite's own test
+fixtures, which a real server doesn't carry).  It is read in both
+directions: a new failure fails the run, and so does an entry that now
+passes.
 
 `eval/questions.json` is the DRAFT evaluation set: 30 questions across
 the three domains, each naming the variable and station a correct answer

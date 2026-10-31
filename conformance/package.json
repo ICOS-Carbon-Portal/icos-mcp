@@ -1,0 +1,12 @@
+{
+  "name": "icos-mcp-conformance",
+  "private": true,
+  "description": "The MCP project's conformance suite, pinned, for icos-mcp (docs/plan.md, Quality 4)",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "conformance": "conformance"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/conformance": "0.1.16"
+  }
+}

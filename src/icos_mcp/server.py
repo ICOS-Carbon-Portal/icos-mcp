@@ -223,22 +223,23 @@ def _visible(store: str, tok: str | None) -> bool:
 # session -- and a stateless server refuses it with the licence named.
 
 LICENCE_URL = "https://data.icos-cp.eu/licence"
-LICENCE_ASK = (
-    "ICOS data are licensed under CC BY 4.0 ({url}). By retrieving this data "
-    "you agree to the licensing conditions: give the citation and DOI that come "
-    "with the data, link the licence, and say if you changed the data. "
-    "Do you accept the ICOS data licence?"
-)
+# Clients may show the message on ONE line (Claude Code 2.1 cuts it), so the
+# question and the link come first; the conditions ride on the checkbox.
+LICENCE_ASK = "Accept the ICOS data licence (CC BY 4.0, {url}) to retrieve this data?"
+LICENCE_TERMS = "Cite the data with its DOI, link the licence, and say if you changed it."
 
 
 class LicenceAcceptance(BaseModel):
-    accept: bool = Field(title="I accept the ICOS data licence (CC BY 4.0)")
+    accept: bool = Field(
+        title="I accept the ICOS data licence (CC BY 4.0)", description=LICENCE_TERMS
+    )
 
 
 # who has accepted, and when: a signed-in caller (auth.user_id, a hash) or an
 # MCP session.  An anonymous caller without a session has neither, and is
 # asked on every data call.  Kept in memory: a restart asks again.
 _licence_seen: dict[str, str] = {}
+_STDIO = False  # main() sets it: a stdio connection is one user
 
 
 def _licence_key(ctx: Context | None) -> str | None:
@@ -249,8 +250,22 @@ def _licence_key(ctx: Context | None) -> str | None:
         h = ctx.headers if ctx is not None else None
     except ValueError:
         h = None
-    sid = h.get("mcp-session-id") if h is not None else None
+    if h is None:
+        # stdio: one process, one user, for the life of the connection
+        return "stdio" if _STDIO else None
+    sid = h.get("mcp-session-id")
     return "session " + sid if sid else None
+
+
+def _client(ctx: Context | None) -> str:
+    """The client's own name for itself, for the log -- never for a decision."""
+    try:
+        p = ctx.session.client_params if ctx is not None else None
+        i = p.client_info if p is not None else None
+        who = f"{i.name} {i.version}" if i is not None else "unnamed client"
+        return f"{who}, protocol {ctx.protocol_version or 'unknown'}"
+    except (AttributeError, ValueError):
+        return "unnamed client"
 
 
 def _licence_refusal(why: str) -> ToolError:
@@ -280,7 +295,11 @@ async def _licence(ctx: Context) -> LicenceAcceptance | Elicit[LicenceAcceptance
     caps = ctx.client_capabilities
     form = caps.elicitation if caps is not None else None
     if form is None or (form.form is None and form.url is not None):
+        print(f"icos-mcp: licence refused, {_client(ctx)} declares no form elicitation",
+              file=sys.stderr, flush=True)
         raise _licence_refusal("This client cannot ask its user (no form elicitation).")
+    print(f"icos-mcp: asking the ICOS data licence of {_client(ctx)} ({key or 'no key'})",
+          file=sys.stderr, flush=True)
     return Elicit(LICENCE_ASK.format(url=LICENCE_URL), LicenceAcceptance)
 
 
@@ -289,6 +308,8 @@ def _licensed(
 ) -> None:
     """Refuse unless the user accepted; remember and log an acceptance."""
     if outcome.action != "accept" or not outcome.data.accept:
+        print(f"icos-mcp: licence not accepted by {_client(ctx)} ({outcome.action})",
+              file=sys.stderr, flush=True)
         raise _licence_refusal("The user did not accept it.")
     if POLICY.licence_gate:
         key = _licence_key(ctx)
@@ -297,7 +318,7 @@ def _licensed(
                 _licence_seen[key] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
             print(
                 f"icos-mcp: ICOS data licence accepted ({key or 'anonymous, this call'}) "
-                f"for {tool}",
+                f"for {tool}, {_client(ctx)}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -2132,6 +2153,8 @@ def main() -> None:
         )
         return
     if a.transport == "stdio":
+        global _STDIO
+        _STDIO = True
         mcp.run("stdio")
     else:
         from mcp.server.transport_security import TransportSecuritySettings

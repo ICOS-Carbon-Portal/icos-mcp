@@ -235,11 +235,21 @@ class LicenceAcceptance(BaseModel):
     )
 
 
-# who has accepted, and when: a signed-in caller (auth.user_id, a hash) or an
-# MCP session.  An anonymous caller without a session has neither, and is
-# asked on every data call.  Kept in memory: a restart asks again.
-_licence_seen: dict[str, str] = {}
+# Who has accepted, and when (epoch seconds): a signed-in caller (auth.user_id,
+# a hash), an MCP session, a stdio connection -- or, for an anonymous caller on
+# the stateless protocol (2026-07-28, which has no session at all), its address
+# and client name, for ANON_TTL.  That last key is a convenience, not an
+# identity: two people behind one address with the same client share it, which
+# for a licence acknowledgement (not an access control) is the right trade
+# against asking on every call.  Kept in memory: a restart asks again.
+_licence_seen: dict[str, float] = {}
+ANON_TTL = 12 * 3600
 _STDIO = False  # main() sets it: a stdio connection is one user
+# A question on screen, per key: calls arriving while it is unanswered WAIT for
+# that answer instead of asking again -- an agent fires several data calls at
+# once, and on the stateless protocol each one would otherwise put its own form.
+_licence_asking: dict[str, tuple[float, asyncio.Future]] = {}
+ASK_WAIT = 90  # seconds a call waits for another call's question
 
 
 def _licence_key(ctx: Context | None) -> str | None:
@@ -254,7 +264,36 @@ def _licence_key(ctx: Context | None) -> str | None:
         # stdio: one process, one user, for the life of the connection
         return "stdio" if _STDIO else None
     sid = h.get("mcp-session-id")
-    return "session " + sid if sid else None
+    if sid:
+        return "session " + sid
+    # stateless and anonymous: the caller's address (as the proxy in front
+    # forwards it) and the client's own name
+    ip = (h.get("x-real-ip") or h.get("x-forwarded-for", "").split(",")[0]).strip()
+    if not ip:
+        try:
+            ip = ctx.request_context.request.client.host
+        except AttributeError:
+            ip = ""
+    try:
+        p = ctx.session.client_params
+        name = p.client_info.name if p is not None and p.client_info is not None else ""
+    except (AttributeError, ValueError):
+        name = ""
+    return f"anonymous {ip} {name}".rstrip() if ip else None
+
+
+def _accepted_by(key: str | None) -> bool:
+    if key is None or key not in _licence_seen:
+        return False
+    if key.startswith("anonymous ") and time.time() - _licence_seen[key] > ANON_TTL:
+        del _licence_seen[key]
+        return False
+    return True
+
+
+def _answering(ctx: Context) -> bool:
+    """This is the round that brings the user's answer back (stateless protocol)."""
+    return bool(getattr(ctx, "input_responses", None))
 
 
 def _client(ctx: Context | None) -> str:
@@ -284,8 +323,19 @@ async def _licence(ctx: Context) -> LicenceAcceptance | Elicit[LicenceAcceptance
     if not POLICY.licence_gate:
         return LicenceAcceptance(accept=True)
     key = _licence_key(ctx)
-    if key and key in _licence_seen:
+    if _accepted_by(key):
         return LicenceAcceptance(accept=True)
+    if key is not None and not _answering(ctx) and key in _licence_asking:
+        since, fut = _licence_asking[key]
+        if time.time() - since < ASK_WAIT:
+            try:
+                ok = await asyncio.wait_for(asyncio.shield(fut), ASK_WAIT - (time.time() - since))
+            except asyncio.TimeoutError:
+                ok = None   # unanswered: ask this call's own question below
+            if ok is True:
+                return LicenceAcceptance(accept=True)
+            if ok is False:
+                raise _licence_refusal("The user did not accept it.")
     modern = (ctx.protocol_version or "") >= "2026-07-28"
     if not modern and not ctx.session.can_send_request:
         raise _licence_refusal(
@@ -298,24 +348,34 @@ async def _licence(ctx: Context) -> LicenceAcceptance | Elicit[LicenceAcceptance
         print(f"icos-mcp: licence refused, {_client(ctx)} declares no form elicitation",
               file=sys.stderr, flush=True)
         raise _licence_refusal("This client cannot ask its user (no form elicitation).")
-    print(f"icos-mcp: asking the ICOS data licence of {_client(ctx)} ({key or 'no key'})",
-          file=sys.stderr, flush=True)
+    if key is not None and not _answering(ctx):
+        since, fut = _licence_asking.get(key, (0.0, None))
+        if fut is None or fut.done() or time.time() - since >= ASK_WAIT:
+            _licence_asking[key] = (time.time(), asyncio.get_running_loop().create_future())
+        print(f"icos-mcp: asking the ICOS data licence of {_client(ctx)} ({key})",
+              file=sys.stderr, flush=True)
     return Elicit(LICENCE_ASK.format(url=LICENCE_URL), LicenceAcceptance)
 
 
 def _licensed(
     outcome: ElicitationResult[LicenceAcceptance], ctx: Context | None, tool: str
 ) -> None:
-    """Refuse unless the user accepted; remember and log an acceptance."""
-    if outcome.action != "accept" or not outcome.data.accept:
+    """Refuse unless the user accepted; remember and log an acceptance, and
+    release the calls waiting on this question either way."""
+    yes = outcome.action == "accept" and bool(outcome.data and outcome.data.accept)
+    key = _licence_key(ctx) if POLICY.licence_gate else None
+    if key is not None and key in _licence_asking:
+        _, fut = _licence_asking.pop(key)
+        if not fut.done():
+            fut.set_result(yes)
+    if not yes:
         print(f"icos-mcp: licence not accepted by {_client(ctx)} ({outcome.action})",
               file=sys.stderr, flush=True)
         raise _licence_refusal("The user did not accept it.")
     if POLICY.licence_gate:
-        key = _licence_key(ctx)
-        if key is None or key not in _licence_seen:
+        if not _accepted_by(key):
             if key is not None:
-                _licence_seen[key] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+                _licence_seen[key] = time.time()
             print(
                 f"icos-mcp: ICOS data licence accepted ({key or 'anonymous, this call'}) "
                 f"for {tool}, {_client(ctx)}",

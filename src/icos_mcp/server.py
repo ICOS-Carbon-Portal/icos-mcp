@@ -101,6 +101,13 @@ the sampling height (HTM150 = Hyltemossa, 150 m), FLUXNET sites are
 mixed-case site codes (SE-Htm)."""
 
 
+QUESTION_NOTE = """
+9. get_data and aggregate take an optional `question`: pass the user's request
+   as they wrote it.  It is kept only if the user agreed, in the licence form,
+   to share their questions anonymously to improve this service; otherwise it
+   is dropped."""
+
+
 def _auth_args() -> dict[str, Any]:
     """Sign-in required over HTTP when the config has an oauth section: the
     SDK then serves the protected-resource metadata naming Keycloak and
@@ -125,7 +132,7 @@ mcp = MCPServer(
     title="ICOS carbon and greenhouse-gas observations",
     version=VERSION,
     website_url=POLICY.public_url,
-    instructions=INSTRUCTIONS,
+    instructions=INSTRUCTIONS + (QUESTION_NOTE if POLICY.questions_log else ""),
     **_auth_args(),
 )
 
@@ -235,6 +242,19 @@ class LicenceAcceptance(BaseModel):
     )
 
 
+QUESTIONS_TERMS = "Optional. Kept: the question, its date, the data asked for -- no address or account. Only to improve the service."
+
+
+class LicenceAndQuestions(LicenceAcceptance):
+    """The form when the server keeps consented questions (questions_log)."""
+
+    share_questions: bool = Field(
+        default=False,
+        title="Share my questions anonymously to help improve this service",
+        description=QUESTIONS_TERMS,
+    )
+
+
 # Who has accepted, and when (epoch seconds): a signed-in caller (auth.user_id,
 # a hash), an MCP session, a stdio connection -- or, for an anonymous caller on
 # the stateless protocol (2026-07-28, which has no session at all), its address
@@ -243,6 +263,8 @@ class LicenceAcceptance(BaseModel):
 # for a licence acknowledgement (not an access control) is the right trade
 # against asking on every call.  Kept in memory: a restart asks again.
 _licence_seen: dict[str, float] = {}
+# who of them agreed to share their questions (questions_log), same keys
+_questions_ok: dict[str, bool] = {}
 ANON_TTL = 12 * 3600
 _STDIO = False  # main() sets it: a stdio connection is one user
 # A question on screen, per key: calls arriving while it is unanswered WAIT for
@@ -307,6 +329,10 @@ def _client(ctx: Context | None) -> str:
         return "unnamed client"
 
 
+def _log(msg: str) -> None:
+    print(f"{dt.datetime.now(dt.UTC):%Y-%m-%dT%H:%M:%SZ} icos-mcp: {msg}", file=sys.stderr, flush=True)
+
+
 def _licence_refusal(why: str) -> ToolError:
     return ToolError(
         "This tool returns ICOS data, which may be retrieved only after the user "
@@ -345,16 +371,45 @@ async def _licence(ctx: Context) -> LicenceAcceptance | Elicit[LicenceAcceptance
     caps = ctx.client_capabilities
     form = caps.elicitation if caps is not None else None
     if form is None or (form.form is None and form.url is not None):
-        print(f"icos-mcp: licence refused, {_client(ctx)} declares no form elicitation",
-              file=sys.stderr, flush=True)
+        _log(f"licence refused, {_client(ctx)} declares no form elicitation")
         raise _licence_refusal("This client cannot ask its user (no form elicitation).")
     if key is not None and not _answering(ctx):
         since, fut = _licence_asking.get(key, (0.0, None))
         if fut is None or fut.done() or time.time() - since >= ASK_WAIT:
             _licence_asking[key] = (time.time(), asyncio.get_running_loop().create_future())
-        print(f"icos-mcp: asking the ICOS data licence of {_client(ctx)} ({key})",
-              file=sys.stderr, flush=True)
-    return Elicit(LICENCE_ASK.format(url=LICENCE_URL), LicenceAcceptance)
+        _log(f"asking the ICOS data licence of {_client(ctx)} ({key})")
+    schema = LicenceAndQuestions if POLICY.questions_log else LicenceAcceptance
+    return Elicit(LICENCE_ASK.format(url=LICENCE_URL), schema)
+
+
+Question = Annotated[
+    str | None,
+    Field(
+        description="the user's request as they wrote it; kept only if the user "
+        "agreed in the licence form to share their questions anonymously, "
+        "otherwise dropped"
+    ),
+]
+
+
+def _keep_question(ctx: Context | None, tool: str, question: str | None, sel: dict) -> None:
+    """One JSON line for a question the user agreed to share: the date (not the
+    time), the question, the tool, the selection, the client's name -- no
+    address, account, token or session key."""
+    if not (POLICY.questions_log and question and question.strip()):
+        return
+    if not _questions_ok.get(_licence_key(ctx) or ""):
+        return
+    try:
+        p = ctx.session.client_params if ctx is not None else None
+        client = p.client_info.name if p is not None and p.client_info is not None else ""
+    except (AttributeError, ValueError):
+        client = ""
+    line = {"date": dt.datetime.now(dt.UTC).strftime("%Y-%m-%d"), "question": question.strip()[:2000],
+            "tool": tool, "selection": {k: v for k, v in sel.items() if v not in (None, "", [])},
+            "client": client}
+    with open(POLICY.questions_log, "a", encoding="utf-8") as f:
+        f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
 
 def _licensed(
@@ -369,19 +424,17 @@ def _licensed(
         if not fut.done():
             fut.set_result(yes)
     if not yes:
-        print(f"icos-mcp: licence not accepted by {_client(ctx)} ({outcome.action})",
-              file=sys.stderr, flush=True)
+        _log(f"licence not accepted by {_client(ctx)} ({outcome.action})")
         raise _licence_refusal("The user did not accept it.")
     if POLICY.licence_gate:
         if not _accepted_by(key):
             if key is not None:
                 _licence_seen[key] = time.time()
-            print(
-                f"icos-mcp: ICOS data licence accepted ({key or 'anonymous, this call'}) "
-                f"for {tool}, {_client(ctx)}",
-                file=sys.stderr,
-                flush=True,
-            )
+            share = bool(getattr(outcome.data, "share_questions", False))
+            if key is not None:
+                _questions_ok[key] = share
+            _log(f"ICOS data licence accepted ({key or 'anonymous, this call'}) for {tool}, "
+                 f"{_client(ctx)}" + (", questions shared" if share else ""))
 
 
 async def _catalogue(tok: str | None) -> list[dict]:
@@ -1358,6 +1411,7 @@ async def get_data(
             description="rows to return; the whole selection is at download_url",
         ),
     ] = ROWS_DEFAULT,
+    question: Question = None,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Data:
     """Observations for one variable, filtered by box, time, station, cruise,
@@ -1365,6 +1419,9 @@ async def get_data(
     the total, a download URL for the whole selection, and the citation the
     user must be given with any use of the data."""
     _licensed(licence, ctx, "get_data")
+    _keep_question(ctx, "get_data", question, {"id": id, "station": station, "cruise": cruise,
+                   "start": start, "end": end, "lat_min": lat_min, "lat_max": lat_max,
+                   "lon_min": lon_min, "lon_max": lon_max})
     tok = _token(ctx)
     var = await _variable(id, tok)
     params = {
@@ -1507,6 +1564,7 @@ async def aggregate(
     height_min: float | None = None,
     height_max: float | None = None,
     apply_qc: ApplyQc = True,
+    question: Question = None,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Aggregate:
     """Statistics over a WHOLE selection, computed on the server: count, mean,
@@ -1520,6 +1578,9 @@ async def aggregate(
     or a concentration gives no physical quantity -- for a flux total
     multiply the mean by the period."""
     _licensed(licence, ctx, "aggregate")
+    _keep_question(ctx, "aggregate", question, {"id": id, "by": by, "station": station,
+                   "start": start, "end": end, "lat_min": lat_min, "lat_max": lat_max,
+                   "lon_min": lon_min, "lon_max": lon_max})
     tok = _token(ctx)
     var = await _variable(id, tok)
     params = {

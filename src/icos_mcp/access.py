@@ -50,6 +50,14 @@ Membership is managed in Keycloak, not here.  A ``group`` rule may list store to
 makes the tools that hand over DATA -- get_data and aggregate -- ask the
 user to accept the ICOS data licence first, through MCP elicitation.  The
 metadata tools are CC0 and never ask.  Off by default.
+
+``"questions_log": "/path/questions.jsonl"`` (or ``ICOS_MCP_QUESTIONS_LOG``
+without a config) adds to that licence form an OPTIONAL consent, off unless
+ticked: share my questions, anonymously, to improve the service.  With it, the
+data tools keep the ``question`` argument the model passes (the user's request
+as they wrote it) as one JSON line -- date, question, tool, selection, client
+name, and nothing that identifies the caller.  Without consent the question is
+dropped.  Needs the licence gate: the consent is asked in its form.
 """
 
 from __future__ import annotations
@@ -99,6 +107,8 @@ class Policy:
     oauth: auth.OAuth | None = None
     # get_data and aggregate ask the user to accept the ICOS data licence
     licence_gate: bool = False
+    # where consented questions go (JSON lines); empty: the form does not ask
+    questions_log: str = ""
 
     @property
     def store_tokens(self) -> frozenset[str]:
@@ -164,6 +174,7 @@ def load() -> Policy:
             public_url=os.environ.get("ICOS_PUBLIC_URL", proxy),
             rules=[Rule(m, "public") for m in DEFAULT_PUBLIC],
             licence_gate=os.environ.get("ICOS_MCP_LICENCE_GATE") == "1",
+            questions_log=os.environ.get("ICOS_MCP_QUESTIONS_LOG", ""),
         )
     with open(path, encoding="utf-8") as f:
         c = json.load(f)
@@ -198,4 +209,5 @@ def load() -> Policy:
         forward_client_ip=bool(c.get("forward_client_ip", False)),
         oauth=auth.from_config(c.get("oauth"), path),
         licence_gate=bool(c.get("licence_gate", False)),
+        questions_log=str(c.get("questions_log", "")),
     )

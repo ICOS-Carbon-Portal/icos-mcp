@@ -45,6 +45,11 @@ offers the store to a caller signed in as a member of a listed Keycloak
 group, or of a subgroup of one.  Group names are paths below /apps/mcp
 ("agage" is /apps/mcp/agage), as the realm's mapper sends them.
 Membership is managed in Keycloak, not here.  A ``group`` rule may list store tokens as well, for scripts.
+
+``"licence_gate": true`` (or ``ICOS_MCP_LICENCE_GATE=1`` without a config)
+makes the tools that hand over DATA -- get_data and aggregate -- ask the
+user to accept the ICOS data licence first, through MCP elicitation.  The
+metadata tools are CC0 and never ask.  Off by default.
 """
 
 from __future__ import annotations
@@ -92,6 +97,8 @@ class Policy:
     # where the proxy believes that header from us (zpd on loopback)
     forward_client_ip: bool = False
     oauth: auth.OAuth | None = None
+    # get_data and aggregate ask the user to accept the ICOS data licence
+    licence_gate: bool = False
 
     @property
     def store_tokens(self) -> frozenset[str]:
@@ -156,6 +163,7 @@ def load() -> Policy:
             proxy_host=None,
             public_url=os.environ.get("ICOS_PUBLIC_URL", proxy),
             rules=[Rule(m, "public") for m in DEFAULT_PUBLIC],
+            licence_gate=os.environ.get("ICOS_MCP_LICENCE_GATE") == "1",
         )
     with open(path, encoding="utf-8") as f:
         c = json.load(f)
@@ -189,4 +197,5 @@ def load() -> Policy:
         rules=rules,
         forward_client_ip=bool(c.get("forward_client_ip", False)),
         oauth=auth.from_config(c.get("oauth"), path),
+        licence_gate=bool(c.get("licence_gate", False)),
     )

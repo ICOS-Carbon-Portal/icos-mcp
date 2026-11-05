@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import sys
 import time
 from typing import Annotated, Any, Literal
 from urllib.parse import urlencode
@@ -32,9 +33,12 @@ from urllib.parse import urlencode
 import httpx
 import numcodecs
 import numpy as np
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
+from mcp.server.elicitation import ElicitationResult
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
+from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp_types import ToolAnnotations
 from pyarrow import ipc
 from pydantic import BaseModel, Field
@@ -203,6 +207,100 @@ def _token(ctx: Context | None) -> str | None:
 def _visible(store: str, tok: str | None) -> bool:
     # groups only from the token the SDK verified for this request
     return POLICY.allowed(store, tok, auth.caller_groups())
+
+
+# ---- the ICOS data licence, asked before data leaves (policy licence_gate) ----
+#
+# The metadata is CC0 and every metadata tool answers freely; the DATA is
+# CC BY 4.0, and the portal asks for acceptance before a download.  So the
+# two tools that hand over data values -- get_data and aggregate -- ask the
+# USER, through MCP elicitation, which the client shows to the person and
+# the model cannot answer for them.
+#
+# A client on protocol 2026-07-28 or later is asked by an input-required
+# answer it retries, which needs no session.  An older client can be asked
+# only over a connection that carries server-to-client requests -- a
+# session -- and a stateless server refuses it with the licence named.
+
+LICENCE_URL = "https://data.icos-cp.eu/licence"
+LICENCE_ASK = (
+    "ICOS data are licensed under CC BY 4.0 ({url}). By retrieving this data "
+    "you agree to the licensing conditions: give the citation and DOI that come "
+    "with the data, link the licence, and say if you changed the data. "
+    "Do you accept the ICOS data licence?"
+)
+
+
+class LicenceAcceptance(BaseModel):
+    accept: bool = Field(title="I accept the ICOS data licence (CC BY 4.0)")
+
+
+# who has accepted, and when: a signed-in caller (auth.user_id, a hash) or an
+# MCP session.  An anonymous caller without a session has neither, and is
+# asked on every data call.  Kept in memory: a restart asks again.
+_licence_seen: dict[str, str] = {}
+
+
+def _licence_key(ctx: Context | None) -> str | None:
+    uid = auth.user_id(get_access_token())
+    if uid:
+        return "user " + uid
+    try:
+        h = ctx.headers if ctx is not None else None
+    except ValueError:
+        h = None
+    sid = h.get("mcp-session-id") if h is not None else None
+    return "session " + sid if sid else None
+
+
+def _licence_refusal(why: str) -> ToolError:
+    return ToolError(
+        "This tool returns ICOS data, which may be retrieved only after the user "
+        f"accepts the ICOS data licence (CC BY 4.0, {LICENCE_URL}). {why} "
+        "The metadata tools -- search_variables, describe_variable, "
+        "find_stations, estimate and get_citation -- need no acceptance."
+    )
+
+
+async def _licence(ctx: Context) -> LicenceAcceptance | Elicit[LicenceAcceptance]:
+    """Resolver of the data tools' licence parameter: nothing to ask when the
+    gate is off or this caller has accepted already, a refusal when the
+    question cannot reach the user, otherwise the question."""
+    if not POLICY.licence_gate:
+        return LicenceAcceptance(accept=True)
+    key = _licence_key(ctx)
+    if key and key in _licence_seen:
+        return LicenceAcceptance(accept=True)
+    modern = (ctx.protocol_version or "") >= "2026-07-28"
+    if not modern and not ctx.session.can_send_request:
+        raise _licence_refusal(
+            f"This connection (protocol {ctx.protocol_version or 'unknown'}, no "
+            "session) cannot carry the question to the user."
+        )
+    caps = ctx.client_capabilities
+    form = caps.elicitation if caps is not None else None
+    if form is None or (form.form is None and form.url is not None):
+        raise _licence_refusal("This client cannot ask its user (no form elicitation).")
+    return Elicit(LICENCE_ASK.format(url=LICENCE_URL), LicenceAcceptance)
+
+
+def _licensed(
+    outcome: ElicitationResult[LicenceAcceptance], ctx: Context | None, tool: str
+) -> None:
+    """Refuse unless the user accepted; remember and log an acceptance."""
+    if outcome.action != "accept" or not outcome.data.accept:
+        raise _licence_refusal("The user did not accept it.")
+    if POLICY.licence_gate:
+        key = _licence_key(ctx)
+        if key is None or key not in _licence_seen:
+            if key is not None:
+                _licence_seen[key] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+            print(
+                f"icos-mcp: ICOS data licence accepted ({key or 'anonymous, this call'}) "
+                f"for {tool}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 async def _catalogue(tok: str | None) -> list[dict]:
@@ -1157,6 +1255,9 @@ async def estimate(
 @mcp.tool(annotations=READ_ONLY)
 async def get_data(
     id: Annotated[str, Field(description="a variable id from search_variables")],
+    licence: Annotated[
+        ElicitationResult[LicenceAcceptance], Resolve(_licence)
+    ],  # asked of the USER when the policy gates data, never an argument
     lat_min: Lat = None,
     lat_max: Lat = None,
     lon_min: Lon = None,
@@ -1182,6 +1283,7 @@ async def get_data(
     height and quality control.  Returns at most max_rows rows as a table,
     the total, a download URL for the whole selection, and the citation the
     user must be given with any use of the data."""
+    _licensed(licence, ctx, "get_data")
     tok = _token(ctx)
     var = await _variable(id, tok)
     params = {
@@ -1304,6 +1406,9 @@ _BUCKET = {"year": "datetime64[Y]", "month": "datetime64[M]", "day": "datetime64
 @mcp.tool(annotations=READ_ONLY)
 async def aggregate(
     id: Annotated[str, Field(description="a variable id from search_variables")],
+    licence: Annotated[
+        ElicitationResult[LicenceAcceptance], Resolve(_licence)
+    ],  # asked of the USER when the policy gates data, never an argument
     by: Annotated[
         Literal[
             "none", "station", "year", "month", "day", "station_year", "station_month"
@@ -1333,6 +1438,7 @@ async def aggregate(
     row: summing a RATE (umol m-2 s-1 per half-hour, gC m-2 d-1 per day)
     or a concentration gives no physical quantity -- for a flux total
     multiply the mean by the period."""
+    _licensed(licence, ctx, "aggregate")
     tok = _token(ctx)
     var = await _variable(id, tok)
     params = {
@@ -1989,6 +2095,12 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument(
+        "--stateful",
+        action="store_true",
+        help="keep MCP sessions over HTTP: needed to put the licence question "
+        "(licence_gate) to clients on protocol 2025-11-25 and older",
+    )
+    ap.add_argument(
         "--hash-token",
         metavar="TOKEN",
         help="print the SHA-256 line a tokens_file takes for TOKEN, and exit",
@@ -2041,7 +2153,7 @@ def main() -> None:
             "streamable-http",
             host=a.host,
             port=a.port,
-            stateless_http=True,
+            stateless_http=not a.stateful,
             transport_security=security,
         )
 

@@ -47,7 +47,7 @@ from icos_mcp import access, auth, cassette, landing, retro
 
 POLICY = access.load()
 PROXY = POLICY.proxy
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 ROWS_DEFAULT = 100  # rows get_data returns unless asked
 ROWS_MAX = 2000  # the most it ever returns: a context window, not a download
@@ -96,6 +96,13 @@ How to use these tools:
    that number answers "how many cells", do not count them by hand.
 8. Always cite: every data answer carries the citation, licence (CC BY
    4.0) and DOI.  Pass them on to the user.
+9. Essential Climate Variables: ICOS provides the OBSERVATIONS that GCOS
+   ECV products are built from, not the ECV products.  A variable's ecv
+   names the ECV it contributes to, ecv_role says whether it was measured
+   or derived and how, and describe_variable gives its CF mapping, the
+   unit conversion and any vocabulary_issues -- CF's "net downward" land
+   carbon flux is NEP, the NEGATIVE of NEE.  list_datasets names each
+   store's ECVs; search_variables finds variables by ECV name.
 Station ids are CASE-SENSITIVE: atmosphere stations are a trigram plus
 the sampling height (HTM150 = Hyltemossa, 150 m), FLUXNET sites are
 mixed-case site codes (SE-Htm)."""
@@ -605,6 +612,12 @@ class Dataset(BaseModel):
     )
     agent_guide_url: str
     croissant_url: str
+    ecvs: list[str] | None = Field(
+        default=None,
+        description="the GCOS Essential Climate Variables this store's "
+        "observations CONTRIBUTE to (ICOS provides observations ECV products are "
+        "built from, not the products themselves)",
+    )
 
 
 class Datasets(BaseModel):
@@ -624,6 +637,24 @@ class Variable(BaseModel):
     )
     quality_flag: str | None = None
     vocabulary_uri: str | None = None
+    ecv: str | None = Field(
+        default=None,
+        description="the GCOS Essential Climate Variable this observation "
+        "contributes to; ICOS provides the observation, not the ECV product",
+    )
+    ecv_role: str | None = Field(
+        default=None,
+        description="observation, or derived and how (gap-filled, partitioned, "
+        "aggregated)",
+    )
+    ecv_relation: str | None = Field(
+        default=None,
+        description="'related' when the variable is outside the ECV's own "
+        "variable set (NEE to the greenhouse-gas ECV)",
+    )
+    cf_standard_name: str | None = Field(
+        default=None, description="the CF standard name, given only for an exact match"
+    )
     access: Literal["query", "zarr"] = Field(
         default="query",
         description="query: estimate/get_data/aggregate serve it; zarr: a "
@@ -661,6 +692,23 @@ class VariableDetail(Variable):
         description="the multi-dimensional variables this one is the PRESCRIBED "
         "slice of; their other slices are read through zarr (describe_variable on one "
         "gives the recipe)",
+    )
+    vocabulary_mappings: list[dict] | None = Field(
+        default=None,
+        description="SKOS mappings to NVS terms: the CF standard name (P07) as "
+        "exactMatch or closeMatch with the conversion from this variable's units "
+        "(factor, offset, to_units; a factor of -1 x ... is a sign flip), and the "
+        "ECV (EXV) it contributes to",
+    )
+    vocabulary_issues: str | None = Field(
+        default=None,
+        description="a gap or an error in CF or in the ECV vocabulary for this "
+        "variable -- read it before comparing with a CF-named field elsewhere",
+    )
+    units_also_as: list[dict] | None = Field(
+        default=None,
+        description="the same quantity in other communities' units: multiply by "
+        "factor (e.g. umol CO2 m-2 s-1 to gC m-2 d-1 or t CO2 km-2 yr-1)",
     )
 
 
@@ -734,8 +782,30 @@ class Data(BaseModel):
 
 # ---------------------------------------------------------------- filters
 
-Lat = Annotated[float | None, Field(ge=-90, le=90)]
-Lon = Annotated[float | None, Field(ge=-180, le=180)]
+LatMin = Annotated[
+    float | None,
+    Field(ge=-90, le=90, description="southern edge of a bounding box, degrees north"),
+]
+LatMax = Annotated[
+    float | None,
+    Field(ge=-90, le=90, description="northern edge of a bounding box, degrees north"),
+]
+LonMin = Annotated[
+    float | None,
+    Field(ge=-180, le=180, description="western edge of a bounding box, degrees east"),
+]
+LonMax = Annotated[
+    float | None,
+    Field(ge=-180, le=180, description="eastern edge of a bounding box, degrees east"),
+]
+HeightMin = Annotated[
+    float | None,
+    Field(description="lowest sampling height above ground, metres (station series)"),
+]
+HeightMax = Annotated[
+    float | None,
+    Field(description="highest sampling height above ground, metres (station series)"),
+]
 
 
 def _ids(v: list[str] | str) -> list[str]:
@@ -1097,6 +1167,7 @@ async def list_datasets(ctx: Context) -> Datasets:
                 n_variables=sum(1 for v in cat if v.get("zarr_store") == store),
                 agent_guide_url=f"{POLICY.url_for(store)}/{store}/agent_guide",
                 croissant_url=f"{POLICY.url_for(store)}/{store}/croissant",
+                ecvs=a.get("ecv") or None,
             )
         )
     return Datasets(datasets=out)
@@ -1143,7 +1214,19 @@ _SYNONYMS = {
     "sea surface temperature": "sst",
     "salinity": "sal",
     "fluxes": "nee",
+    "soil moisture": "swc",
+    "soil water": "swc",
+    "albedo": "alb",
+    "snow depth": "d_snow",
+    "snow": "d_snow",
+    "water table": "wtd",
+    "photosynthetically active radiation": "ppfd_in",
+    "par": "ppfd_in",
+    "soil temperature": "ts",
 }
+
+# asking for ECVs at all ("which ECVs", "essential climate variables")
+_ASK_ECV = re.compile(r"\b(ecvs?|essential climate (variables?|observables?))\b", re.IGNORECASE)
 
 
 _NRT = re.compile(
@@ -1178,6 +1261,10 @@ def _as_variable(v: dict) -> Variable:
         query_kind=v.get("query_kind") or "",
         quality_flag=v.get("quality_flag_variable"),
         vocabulary_uri=v.get("iadopt_uri"),
+        ecv=v.get("ecv"),
+        ecv_role=v.get("ecv_role"),
+        ecv_relation=v.get("ecv_relation"),
+        cf_standard_name=v.get("cf_standard_name"),
     )
 
 
@@ -1196,7 +1283,9 @@ async def search_variables(
     store: Annotated[
         str | None, Field(description="limit to one store, e.g. icos-obspack.zarr")
     ] = None,
-    limit: Annotated[int, Field(ge=1, le=50)] = 15,
+    limit: Annotated[
+        int, Field(ge=1, le=50, description="the most variables to return, best first")
+    ] = 15,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Variables:
     """Find variable ids in the ICOS catalogue by name, quantity or unit.
@@ -1218,6 +1307,7 @@ async def search_variables(
         )
         for v in await _catalogue(tok)
     ]
+    ask_ecv = bool(_ASK_ECV.search(text))
     cands += [
         (
             z,
@@ -1255,6 +1345,13 @@ async def search_variables(
                 score += 2
             if any(a in unit for a in alts if " " not in a):
                 score += 1
+            # the ECV it contributes to: "soil moisture", "greenhouse gases"
+            if v.get("ecv") and any(
+                re.search(rf"\b{re.escape(a)}", v["ecv"].lower()) for a in alts if len(a) > 2
+            ):
+                score += 3
+        if ask_ecv and v.get("ecv"):
+            score += 6
         if not score:
             continue
         if not ask_companion and _COMPANION.search(short):
@@ -1308,6 +1405,7 @@ async def describe_variable(
     a = await _store_attrs(store)
     guide = a.get("agent_guide") or {}
     qc = (guide.get("conventions") or {}).get("quality_control")
+    vocab = await _array_vocabulary(store, v.get("group") or "", v.get("shortname") or "")
     return VariableDetail(
         **_as_variable(v).model_dump(),
         dataset_title=a.get("title", store),
@@ -1317,7 +1415,28 @@ async def describe_variable(
         license=a.get("license"),
         doi=a.get("collection_doi"),
         variants=[z["id"] for z in zs if z["prescribed"] == id] or None,
+        **vocab,
     )
+
+
+async def _array_vocabulary(store: str, group: str, name: str) -> dict:
+    """The array's vocabulary attributes (written by the store's finalize
+    step), the JSON-text ones parsed; empty when the array has none."""
+    path = "/".join(p for p in (store, group, name) if p)
+    try:
+        za = await _cached_json(f"/{path}/.zattrs")
+    except Exception:
+        return {}
+    out: dict = {}
+    for key in ("vocabulary_mappings", "units_also_as"):
+        if za.get(key):
+            try:
+                out[key] = json.loads(za[key])
+            except ValueError:
+                pass
+    if za.get("vocabulary_issues"):
+        out["vocabulary_issues"] = za["vocabulary_issues"]
+    return out
 
 
 StartT = Annotated[
@@ -1351,16 +1470,16 @@ ApplyQc = Annotated[
 @mcp.tool(annotations=READ_ONLY)
 async def estimate(
     id: Annotated[str, Field(description="a variable id from search_variables")],
-    lat_min: Lat = None,
-    lat_max: Lat = None,
-    lon_min: Lon = None,
-    lon_max: Lon = None,
+    lat_min: LatMin = None,
+    lat_max: LatMax = None,
+    lon_min: LonMin = None,
+    lon_max: LonMax = None,
     start: StartT = None,
     end: EndT = None,
     station: Stations = None,
     cruise: Cruises = None,
-    height_min: float | None = None,
-    height_max: float | None = None,
+    height_min: HeightMin = None,
+    height_max: HeightMax = None,
     apply_qc: ApplyQc = True,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Estimate:
@@ -1392,16 +1511,16 @@ async def get_data(
     licence: Annotated[
         ElicitationResult[LicenceAcceptance], Resolve(_licence)
     ],  # asked of the USER when the policy gates data, never an argument
-    lat_min: Lat = None,
-    lat_max: Lat = None,
-    lon_min: Lon = None,
-    lon_max: Lon = None,
+    lat_min: LatMin = None,
+    lat_max: LatMax = None,
+    lon_min: LonMin = None,
+    lon_max: LonMax = None,
     start: StartT = None,
     end: EndT = None,
     station: Stations = None,
     cruise: Cruises = None,
-    height_min: float | None = None,
-    height_max: float | None = None,
+    height_min: HeightMin = None,
+    height_max: HeightMax = None,
     apply_qc: ApplyQc = True,
     max_rows: Annotated[
         int,
@@ -1479,10 +1598,10 @@ async def get_citation(
     station: Stations = None,
     start: StartT = None,
     end: EndT = None,
-    lat_min: Lat = None,
-    lat_max: Lat = None,
-    lon_min: Lon = None,
-    lon_max: Lon = None,
+    lat_min: LatMin = None,
+    lat_max: LatMax = None,
+    lon_min: LonMin = None,
+    lon_max: LonMax = None,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> Citation:
     """How to cite a variable's data: the citation text, licence and DOI from
@@ -1553,16 +1672,16 @@ async def aggregate(
         ],
         Field(description="the groups: none (one result), station, a period, or both"),
     ] = "none",
-    lat_min: Lat = None,
-    lat_max: Lat = None,
-    lon_min: Lon = None,
-    lon_max: Lon = None,
+    lat_min: LatMin = None,
+    lat_max: LatMax = None,
+    lon_min: LonMin = None,
+    lon_max: LonMax = None,
     start: StartT = None,
     end: EndT = None,
     station: Stations = None,
     cruise: Cruises = None,
-    height_min: float | None = None,
-    height_max: float | None = None,
+    height_min: HeightMin = None,
+    height_max: HeightMax = None,
     apply_qc: ApplyQc = True,
     question: Question = None,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
@@ -1928,12 +2047,18 @@ async def find_stations(
             description="search around this point, with near_lon and radius_km",
         ),
     ] = None,
-    near_lon: Annotated[float | None, Field(ge=-180, le=180)] = None,
-    radius_km: Annotated[float, Field(gt=0, le=20000)] = 300,
-    lat_min: Lat = None,
-    lat_max: Lat = None,
-    lon_min: Lon = None,
-    lon_max: Lon = None,
+    near_lon: Annotated[
+        float | None,
+        Field(ge=-180, le=180, description="longitude of the point near_lat names"),
+    ] = None,
+    radius_km: Annotated[
+        float,
+        Field(gt=0, le=20000, description="search radius around near_lat/near_lon, km"),
+    ] = 300,
+    lat_min: LatMin = None,
+    lat_max: LatMax = None,
+    lon_min: LonMin = None,
+    lon_max: LonMax = None,
     text: Annotated[
         str | None,
         Field(
@@ -1944,7 +2069,9 @@ async def find_stations(
     country: Annotated[
         str | None, Field(description="two-letter code, e.g. SE")
     ] = None,
-    limit: Annotated[int, Field(ge=1, le=200)] = 50,
+    limit: Annotated[
+        int, Field(ge=1, le=200, description="the most stations to return")
+    ] = 50,
     ctx: Context | None = None,  # injected by the SDK, not a tool argument
 ) -> StationList:
     """The stations that carry a variable: id, name, position, sampling height,

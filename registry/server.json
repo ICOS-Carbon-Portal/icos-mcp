@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "eu.icos-cp/icos",
+  "title": "ICOS carbon and greenhouse-gas observations",
+  "description": "ICOS atmosphere, ocean and ecosystem greenhouse-gas observations, with citation and DOI per answer",
+  "version": "0.3.0",
+  "websiteUrl": "https://mcp.icos-cp.eu",
+  "repository": {
+    "url": "https://github.com/ICOS-Carbon-Portal/icos-mcp",
+    "source": "github",
+    "id": "1439645089"
+  },
+  "icons": [
+    {
+      "src": "https://mcp.icos-cp.eu/static/icos-logo.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    },
+    {
+      "src": "https://mcp.icos-cp.eu/static/icos-logo-footer.png",
+      "mimeType": "image/png"
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.icos-cp.eu/mcp"
+    }
+  ]
+}

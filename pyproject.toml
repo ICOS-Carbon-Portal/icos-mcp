@@ -1,6 +1,6 @@
 [project]
 name = "icos-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "ICOS carbon and greenhouse-gas observations for AI assistants, over MCP"
 readme = "README.md"
 license = "GPL-3.0-or-later"

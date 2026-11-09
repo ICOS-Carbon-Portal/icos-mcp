@@ -25,6 +25,9 @@ For each question:
     uv run python eval/run.py --agent claude          # Claude Code instead
 
 QWEN_BASE_URL and QWEN_MODEL override the endpoint and the model.
+EVAL_MCP_URL (e.g. http://127.0.0.1:8094/mcp) runs the truths and either
+agent against that server over streamable HTTP -- mcpd, the M9 port --
+instead of this checkout's own server in process.
 
 Results go to eval/results/<UTC stamp>.jsonl, one line per question.
 """
@@ -55,6 +58,9 @@ from icos_mcp import server
 
 logging.disable(logging.INFO)
 PROXY = server.POLICY.proxy
+# EVAL_MCP_URL: drive a server over streamable HTTP (mcpd, for one)
+# instead of this checkout's own, in process
+_TARGET = os.environ.get("EVAL_MCP_URL") or server.mcp
 
 # ---------------------------------------------------------------- truth
 
@@ -77,7 +83,7 @@ def _summary(params: dict) -> dict:
 
 
 async def _tool(name: str, args: dict):
-    async with Client(server.mcp) as c:
+    async with Client(_TARGET) as c:
         r = await c.call_tool(name, args)
         return r
 
@@ -197,7 +203,7 @@ async def _qwen(question: str, model: str, think: bool) -> dict:
     message.  Ends at the first answer without a tool call."""
     calls, answer, usage = [], "", {"prompt": 0, "completion": 0}
     t0 = time.time()
-    async with Client(server.mcp) as c, httpx.AsyncClient(timeout=600) as http:
+    async with Client(_TARGET) as c, httpx.AsyncClient(timeout=600) as http:
         tools = [
             {
                 "type": "function",
@@ -295,6 +301,8 @@ def _claude(question: str, model: str | None) -> dict:
             }
         }
     }
+    if os.environ.get("EVAL_MCP_URL"):
+        cfg["mcpServers"]["icos"] = {"type": "http", "url": os.environ["EVAL_MCP_URL"]}
     with tempfile.TemporaryDirectory() as d:
         cpath = os.path.join(d, "mcp.json")
         with open(cpath, "w") as f:
@@ -391,7 +399,9 @@ def grade_route(q: dict, calls: list[dict]) -> tuple[bool | None, str]:
             s
             for c in calls
             if c["tool"] in ("get_data", "estimate", "aggregate")
-            for s in (c["input"].get("station") or [])
+            # a string is one id or a comma-separated list, as the tools
+            # read it (server._ids) -- iterating it gave its letters
+            for s in server._ids(c["input"].get("station") or [])
         }
         if not used & set(e["station"]):
             ok = False

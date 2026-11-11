@@ -214,6 +214,43 @@ framing and dispatch, the streamable-HTTP transport with sessions and
 server-sent events, the seven tools, and the station cache -- some
 1,000 to 1,500 lines.
 
+**Sign-in is part of the contract (added 2026-10-31).**  The Python
+server checks OAuth tokens from ICOS's Keycloak and offers `group`
+stores (`auth.py`; the move to the production SSO is
+`docs/sso-production.md`).  mcpd ports it, and the corpus records it.
+* *What the M9 library already has:* `Rsa` (RS256 verification:
+  PKCS#1 v1.5 over SHA-256, using OpenSSL, held against Python's
+  `cryptography`, forgeries included), `Hash` (SHA-256 and HMAC, for
+  the store tokens), `Text.FromBase64Url`, `Json`, and the HTTP client.
+* *What mcpd adds:*
+  * Reading the realm's keys (JWK: modulus and exponent). `Rsa` reads
+    only PEM and DER, so this is a small DER encoder, or better an
+    `Rsa.PublicKeyNE` in the library. Plus the key set fetched over
+    HTTPS, cached for an hour, and refetched for an unknown `kid`.
+  * The token checks in the oracle's order: RS256 only, then issuer,
+    audience (a string or a list), expiry and `sub`, then the scope
+    (403), then `groups` for `group` rules.
+  * The protected-resource metadata and the 401 and 403
+    `WWW-Authenticate` headers, worded as the SDK words them, because
+    they are compared byte for byte.
+  * The `group` rule type and its load-time refusals.
+  
+  About 2 to 3 days on top of the port.
+* *Made comparable on the Python side first:* it accepts RS256 only,
+  so the two refuse the same tokens, and `jwks_file` loads a fixed key
+  set in place of fetching Keycloak's.
+* *The recordings:*
+  * Sessions are signed by a test key held in the repository (its JWKS
+    under `tests/`, served through `jwks_file`), with tokens that outlive
+    the recording.
+  * Real Keycloak tokens never enter the corpus: they expire, the keys
+    rotate, and they name people.
+  * The corpus covers: no token, a forged signature, a wrong audience,
+    an expired token, a missing scope (403), a store token, a group
+    member and a non-member.
+* *Conformance* still runs WITHOUT the oauth section: with sign-in on,
+  every scenario stops at the 401.
+
 ## Phases
 
 | phase | content | effort |
@@ -226,6 +263,31 @@ server-sent events, the seven tools, and the station cache -- some
 | 5. announcement | listing (below), a page in the landing site, a notebook showing it | when 2-3 hold |
 | 6. the oracle gate | the session corpus recorded from the Python server, `mcp-oracle.lock`, the replay and conformance phases in CI on CT122 | 2-3 days |
 | 7. the M9 port | `mcpd`, until the gate is green; then it takes `/mcp` and the Python server becomes the oracle only | 2-3 weeks |
+
+## Where it stands (2026-11-11)
+
+Phases 0-4 and 6-7 are done; daily reports are in `docs/reports/`.
+
+* **The Python server** serves <https://mcp.icos-cp.eu> (CT122:8090),
+  0.3.0 (`4da9c57`), public and in the MCP Registry.  The licence gate
+  and the question log are on `main` but **off** in production since the
+  2026-11-05 rollback (`docs/reports/2026-11-05-mcp-licence-gate.md`).
+  Sign-in through ICOS Keycloak is the agreed direction and is parked.
+* **mcpd** (M9, in ICOS-Carbon-Portal/zarrm9) is gated against this
+  repository on every push there: 90 corpus rows, only 2 transport rows
+  differ, both declared; conformance results identical.  It runs as a
+  shadow on 10.10.10.126:8094.  It **refuses to start** on a
+  configuration asking for sign-in, group stores, the licence gate or
+  the question log, so the sign-in contract above is not yet ported.
+* **A Scala port** (`mcp-scala/` in zarrm9), added 2026-11-09 to
+  `cp-kernel`'s conventions, answers the same corpus with the same 2
+  declared differences, runs in the same gate, and is a shadow on :8095.
+  This repository is the oracle for both ports.
+* **Claude evaluation:** both ports answered 26 of 28 correctly, with
+  the same two misses as the Python server.  The Qwen evaluation needs
+  the ICOS network and was not run on the ports.
+* **Open:** which port replaces the Python server.  Only one will be
+  chosen; the switch is the caddy line for mcp.icos-cp.eu.
 
 ## Making it known
 
